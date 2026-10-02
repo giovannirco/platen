@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/OpenPrinting/goipp"
@@ -35,9 +36,13 @@ type Printer struct {
 	NotAccepting bool
 	// PageRanges is the page-ranges-supported attribute.
 	PageRanges bool
+	// Down makes the printer answer every request with an HTTP error, as a
+	// printer in a broken state or a wrong address would.
+	Down atomic.Bool
 
-	mu   sync.Mutex
-	jobs []*PrintedJob
+	mu       sync.Mutex
+	jobs     []*PrintedJob
+	requests int
 }
 
 // NewRasterPrinter returns a printer like an AirPrint inkjet: it takes raster
@@ -68,6 +73,13 @@ func (p *Printer) Jobs() []*PrintedJob {
 	return append([]*PrintedJob(nil), p.jobs...)
 }
 
+// Requests returns how many IPP requests the printer received.
+func (p *Printer) Requests() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.requests
+}
+
 func keywords(values ...string) []goipp.Value {
 	out := make([]goipp.Value, len(values))
 	for i, v := range values {
@@ -81,6 +93,13 @@ func attr(name string, tag goipp.Tag, values ...goipp.Value) goipp.Attribute {
 }
 
 func (p *Printer) serve(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	p.requests++
+	p.mu.Unlock()
+	if p.Down.Load() {
+		http.Error(w, "printer error", http.StatusServiceUnavailable)
+		return
+	}
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), goipp.ContentType) {
 		http.Error(w, "not an IPP request", http.StatusBadRequest)
 		return

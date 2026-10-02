@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/giovannirco/platen/internal/config"
@@ -56,24 +58,35 @@ type Hub struct {
 	fetcher *fetcher
 }
 
+// retryAfter is how long a device that did not answer is left alone. A printer
+// that is switched off then costs one timeout, not one for every caller.
+const retryAfter = 5 * time.Second
+
 type printerDev struct {
 	cfg    config.Printer
 	client *ipp.Client
 
-	mu      sync.Mutex
-	attrs   *ipp.Printer
-	fetched time.Time
-	lastErr error
+	mu       sync.Mutex
+	attrs    *ipp.Printer
+	fetched  time.Time
+	lastErr  error
+	failedAt time.Time
 }
 
 type scannerDev struct {
 	cfg    config.Scanner
 	client *escl.Client
-	busy   sync.Mutex
+	// busy is held while a scan job runs; scanning says so without blocking.
+	busy     sync.Mutex
+	scanning atomic.Bool
 
-	mu      sync.Mutex
-	caps    *escl.Capabilities
-	fetched time.Time
+	mu       sync.Mutex
+	caps     *escl.Capabilities
+	fetched  time.Time
+	status   *escl.Status
+	statusAt time.Time
+	lastErr  error
+	failedAt time.Time
 }
 
 // New builds a Hub from the configuration.
@@ -204,18 +217,30 @@ func (p *printerDev) attributes(ctx context.Context, maxAge time.Duration) (*ipp
 	if p.attrs != nil && time.Since(p.fetched) < maxAge {
 		return p.attrs, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	if p.lastErr != nil && time.Since(p.failedAt) < retryAfter {
+		return p.known()
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	attrs, err := p.client.PrinterAttributes(ctx)
+	attrs, err := p.client.PrinterAttributes(fetchCtx)
 	if err != nil {
-		p.lastErr = err
-		if p.attrs != nil && time.Since(p.fetched) < time.Minute {
-			return p.attrs, nil // a short hiccup: keep serving what we know
+		if ctx.Err() != nil {
+			return nil, ctx.Err() // the caller gave up; that says nothing about the printer
 		}
-		return nil, err
+		p.lastErr, p.failedAt = err, time.Now()
+		return p.known()
 	}
 	p.attrs, p.fetched, p.lastErr = attrs, time.Now(), nil
 	return attrs, nil
+}
+
+// known answers after a failed fetch: what the printer said less than a minute
+// ago (a short hiccup shouldn't show as offline), or else the error.
+func (p *printerDev) known() (*ipp.Printer, error) {
+	if p.attrs != nil && time.Since(p.fetched) < time.Minute {
+		return p.attrs, nil
+	}
+	return nil, p.lastErr
 }
 
 func (h *Hub) printerStatus(ctx context.Context, p *printerDev, maxAge time.Duration) PrinterStatus {
@@ -366,14 +391,49 @@ func (s *scannerDev) capabilities(ctx context.Context) (*escl.Capabilities, erro
 	if s.caps != nil && time.Since(s.fetched) < 10*time.Minute {
 		return s.caps, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	if s.lastErr != nil && time.Since(s.failedAt) < retryAfter {
+		return nil, s.lastErr
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	caps, err := s.client.Capabilities(ctx)
+	caps, err := s.client.Capabilities(fetchCtx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		s.lastErr, s.failedAt = err, time.Now()
 		return nil, err
 	}
-	s.caps, s.fetched = caps, time.Now()
+	s.caps, s.fetched, s.lastErr = caps, time.Now(), nil
 	return caps, nil
+}
+
+// state reads what the scanner is doing. While Platen itself runs a scan the
+// answer is known, and the scanner is not asked.
+func (s *scannerDev) state(ctx context.Context) (*escl.Status, error) {
+	if s.scanning.Load() {
+		return &escl.Status{State: "Processing"}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status != nil && time.Since(s.statusAt) < time.Second {
+		return s.status, nil
+	}
+	if s.lastErr != nil && time.Since(s.failedAt) < retryAfter {
+		return nil, s.lastErr
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	status, err := s.client.Status(fetchCtx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		s.status, s.lastErr, s.failedAt = nil, err, time.Now()
+		return nil, err
+	}
+	s.status, s.statusAt, s.lastErr = status, time.Now(), nil
+	return status, nil
 }
 
 func (h *Hub) scannerStatus(ctx context.Context, s *scannerDev) ScannerStatus {
@@ -409,12 +469,16 @@ func (h *Hub) scannerStatus(ctx context.Context, s *scannerDev) ScannerStatus {
 		st.MaxWidthMM = float64(in.MaxWidth) * 25.4 / 300
 		st.MaxHeightMM = float64(in.MaxHeight) * 25.4 / 300
 	}
-	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if status, err := s.client.Status(sctx); err == nil {
-		st.State, st.FeederState = status.State, status.FeederState
+	// The capabilities are kept for minutes; the state shows whether the scanner
+	// answers right now.
+	status, err := s.state(ctx)
+	if err != nil {
+		st.Online, st.Error = false, err.Error()
+		st.Summary = fmt.Sprintf("%s is not reachable: %v", s.cfg.Name, err)
+		return st
 	}
-	st.Summary = fmt.Sprintf("%s is %s.", s.cfg.Name, orDefault(st.State, "online"))
+	st.State, st.FeederState = status.State, status.FeederState
+	st.Summary = fmt.Sprintf("%s is %s.", s.cfg.Name, orDefault(strings.ToLower(st.State), "online"))
 	return st
 }
 

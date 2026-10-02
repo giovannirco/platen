@@ -25,14 +25,16 @@ import (
 // Engine renders PDF pages. It starts the WebAssembly runtime on first use and
 // renders one page at a time, which keeps memory use predictable.
 type Engine struct {
-	mu   sync.Mutex
+	// busy holds one token while a PDF is open. It is a channel rather than a
+	// mutex so that a caller can stop waiting when its request is cancelled.
+	busy chan struct{}
 	pool pdfium.Pool
 	err  error
 	init sync.Once
 }
 
 // NewEngine returns an Engine. Nothing is loaded until the first PDF is opened.
-func NewEngine() *Engine { return &Engine{} }
+func NewEngine() *Engine { return &Engine{busy: make(chan struct{}, 1)} }
 
 func (e *Engine) start() error {
 	e.init.Do(func() {
@@ -43,8 +45,8 @@ func (e *Engine) start() error {
 
 // Close stops the WebAssembly runtime.
 func (e *Engine) Close() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.busy <- struct{}{} // wait for the document that is open, if any
+	defer func() { <-e.busy }()
 	if e.pool != nil {
 		err := e.pool.Close()
 		e.pool = nil
@@ -71,11 +73,15 @@ func (e *Engine) OpenPDF(ctx context.Context, data []byte) (*PDF, error) {
 	if err := e.start(); err != nil {
 		return nil, fmt.Errorf("start PDF renderer: %w", err)
 	}
-	e.mu.Lock()
+	select {
+	case e.busy <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for another document to finish: %w", ctx.Err())
+	}
 	ok := false
 	defer func() {
 		if !ok {
-			e.mu.Unlock()
+			<-e.busy
 		}
 	}()
 	instCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -117,7 +123,7 @@ func (p *PDF) Close() {
 	p.closed = true
 	_, _ = p.instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: p.doc})
 	_ = p.instance.Close()
-	p.engine.mu.Unlock()
+	<-p.engine.busy
 }
 
 // PageSize returns the size of a page in points (1/72 inch).

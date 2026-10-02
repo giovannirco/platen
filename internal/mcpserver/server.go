@@ -151,6 +151,11 @@ func additive(title string) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, DestructiveHint: ptr(false), OpenWorldHint: ptr(false)}
 }
 
+// reaching marks an additive tool that can also read from the outside world.
+func reaching(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, DestructiveHint: ptr(false), OpenWorldHint: ptr(true)}
+}
+
 // destructive marks a tool that removes or stops something.
 func destructive(title string) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)}

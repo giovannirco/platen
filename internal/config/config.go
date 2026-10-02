@@ -7,6 +7,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -33,12 +34,20 @@ type Server struct {
 	// BaseURL is the address people and agents use to reach Platen. It is used to
 	// build links in API and MCP results. Defaults to http://localhost:<port>.
 	BaseURL string `yaml:"base_url" json:"base_url"`
-	// AllowedHosts lists extra host names Platen may be reached under. It only
-	// matters when no access token is set: requests for any other name are then
-	// refused, which stops DNS-rebinding attacks from a web page. IP addresses,
-	// localhost, *.local names and the host of BaseURL are always accepted.
+	// AllowedHosts lists extra host names Platen may be reached under. It matters
+	// for requests that are let in without a token (no token configured, or a
+	// client in a trusted network): those are refused under any other name, which
+	// stops DNS-rebinding attacks from a web page. IP addresses, localhost,
+	// *.local names and the host of BaseURL are always accepted.
 	// A single "*" turns the check off.
 	AllowedHosts []string `yaml:"allowed_hosts" json:"allowed_hosts,omitempty"`
+	// TrustedProxies lists the reverse proxies in front of Platen, as addresses or
+	// networks (CIDR). Only from these does Platen take the client's address from
+	// the X-Forwarded-For header. It matters for auth.trusted_networks: without
+	// it, every request through a proxy looks as if it came from the proxy.
+	TrustedProxies []string `yaml:"trusted_proxies" json:"trusted_proxies,omitempty"`
+	// ProxyPrefixes is TrustedProxies, parsed by Validate.
+	ProxyPrefixes []netip.Prefix `yaml:"-" json:"-"`
 	// DataDir stores scans and job history.
 	DataDir string `yaml:"data_dir" json:"data_dir"`
 	// StateSecret signs the state that travels with multi-step MCP calls
@@ -49,10 +58,21 @@ type Server struct {
 
 // Auth controls access to the API, the UI and the MCP endpoint.
 type Auth struct {
-	// Tokens are accepted bearer tokens. When empty, Platen is open to anyone who
-	// can reach it, which is only suitable for a trusted network.
+	// Tokens are accepted bearer tokens.
 	Tokens []string `yaml:"tokens"`
+	// TrustedNetworks lists networks (CIDR) or single addresses whose clients need
+	// no token, for example the home network: phones and laptops there just open
+	// the web interface, while everything else has to present a token.
+	//
+	// With neither tokens nor trusted networks, Platen is open to anyone who can
+	// reach it. With trusted networks and no token, only those networks get in.
+	TrustedNetworks []string `yaml:"trusted_networks"`
+	// TrustedPrefixes is TrustedNetworks, parsed by Validate.
+	TrustedPrefixes []netip.Prefix `yaml:"-"`
 }
+
+// Open reports whether Platen lets everyone in: no token and no trusted network.
+func (a Auth) Open() bool { return len(a.Tokens) == 0 && len(a.TrustedNetworks) == 0 }
 
 // Printer is an IPP printer or print queue.
 type Printer struct {
@@ -172,6 +192,12 @@ func (c *Config) applyEnv() error {
 	}
 	if v := os.Getenv("PLATEN_AUTH_TOKENS"); v != "" {
 		c.Auth.Tokens = splitList(v)
+	}
+	if v := os.Getenv("PLATEN_TRUSTED_NETWORKS"); v != "" {
+		c.Auth.TrustedNetworks = splitList(v)
+	}
+	if v := os.Getenv("PLATEN_TRUSTED_PROXIES"); v != "" {
+		c.Server.TrustedProxies = splitList(v)
 	}
 	if v := os.Getenv("PLATEN_PAPERLESS_URL"); v != "" {
 		c.Paperless.URL = v
@@ -304,7 +330,36 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("auth.tokens[%d] is shorter than 16 characters", i))
 		}
 	}
+	var err error
+	if c.Auth.TrustedPrefixes, err = parsePrefixes("auth.trusted_networks", c.Auth.TrustedNetworks); err != nil {
+		errs = append(errs, err)
+	}
+	if c.Server.ProxyPrefixes, err = parsePrefixes("server.trusted_proxies", c.Server.TrustedProxies); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// parsePrefixes reads a list of networks in CIDR form; a bare address stands
+// for that one host.
+func parsePrefixes(field string, list []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	var errs []error
+	for i, raw := range list {
+		raw = strings.TrimSpace(raw)
+		if p, err := netip.ParsePrefix(raw); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s[%d] %q is not an address or a network such as 192.168.1.0/24", field, i, raw))
+			continue
+		}
+		a = a.Unmap().WithZone("")
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	return out, errors.Join(errs...)
 }
 
 // DefaultPrinter returns the default printer, or nil when none is configured.

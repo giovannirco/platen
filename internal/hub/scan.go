@@ -153,6 +153,8 @@ func (h *Hub) StartScan(ctx context.Context, req ScanRequest) (*store.Scan, erro
 		return nil, ErrScannerBusy
 	}
 	defer dev.busy.Unlock()
+	dev.scanning.Store(true)
+	defer dev.scanning.Store(false)
 
 	h.scanMu.Lock()
 	sc, err := h.store.CreateScan(store.Scan{
@@ -195,6 +197,8 @@ func (h *Hub) ScanNextPage(ctx context.Context, id string) (*store.Scan, error) 
 		return nil, ErrScannerBusy
 	}
 	defer dev.busy.Unlock()
+	dev.scanning.Store(true)
+	defer dev.scanning.Store(false)
 	if err := h.acquire(ctx, dev, sc, settings); err != nil {
 		return nil, err
 	}
@@ -235,14 +239,24 @@ func (h *Hub) acquire(ctx context.Context, dev *scannerDev, sc *store.Scan, sett
 		if err != nil {
 			return fmt.Errorf("the scanner did not deliver a JPEG image: %w", err)
 		}
+		// A scan takes seconds, and the person may rename the document or remove
+		// a page meanwhile. The page is therefore added to the scan as it is on
+		// disk now, not to the copy read before the scanner started.
 		h.scanMu.Lock()
-		_, err = h.store.AddPage(sc, data, cfg.Width, cfg.Height)
+		cur, err := h.store.Scan(sc.ID)
+		if err == nil {
+			_, err = h.store.AddPage(cur, data, cfg.Width, cfg.Height)
+		}
 		h.scanMu.Unlock()
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("%w: scan %q was deleted while its next page was scanned", ErrNotFound, sc.ID)
+		}
 		if err != nil {
 			return err
 		}
+		*sc = *cur
 		added++
-		h.events.publish(Event{Type: "scan", ID: sc.ID, Data: sc})
+		h.events.publish("scan", sc.ID, sc)
 		if settings.Source == "Platen" {
 			break // the flatbed holds one page
 		}
@@ -276,7 +290,7 @@ func (h *Hub) RemoveScanPage(id, pageID string) (*store.Scan, error) {
 	if err := h.store.RemovePage(sc, pageID); err != nil {
 		return nil, fmt.Errorf("%w: page %q", ErrNotFound, pageID)
 	}
-	h.events.publish(Event{Type: "scan", ID: sc.ID, Data: sc})
+	h.events.publish("scan", sc.ID, sc)
 	return sc, nil
 }
 
@@ -291,7 +305,7 @@ func (h *Hub) MoveScanPage(id, pageID string, to int) (*store.Scan, error) {
 	if err := h.store.MovePage(sc, pageID, to); err != nil {
 		return nil, fmt.Errorf("%w: page %q", ErrNotFound, pageID)
 	}
-	h.events.publish(Event{Type: "scan", ID: sc.ID, Data: sc})
+	h.events.publish("scan", sc.ID, sc)
 	return sc, nil
 }
 
@@ -304,7 +318,11 @@ func (h *Hub) RenameScan(id, title string) (*store.Scan, error) {
 		return nil, err
 	}
 	sc.Title = strings.TrimSpace(title)
-	return sc, h.store.SaveScan(sc)
+	if err := h.store.SaveScan(sc); err != nil {
+		return nil, err
+	}
+	h.events.publish("scan", sc.ID, sc)
+	return sc, nil
 }
 
 // DeleteScan removes a scan and its files.
@@ -314,7 +332,7 @@ func (h *Hub) DeleteScan(id string) error {
 	if err := h.store.DeleteScan(id); err != nil {
 		return fmt.Errorf("%w: scan %q", ErrNotFound, id)
 	}
-	h.events.publish(Event{Type: "scan.deleted", ID: id})
+	h.events.publish("scan.deleted", id, nil)
 	return nil
 }
 
@@ -379,7 +397,7 @@ func (h *Hub) FinishScan(id, format string) (*store.Scan, error) {
 	if err := h.store.SaveScan(sc); err != nil {
 		return nil, err
 	}
-	h.events.publish(Event{Type: "scan", ID: sc.ID, Data: sc})
+	h.events.publish("scan", sc.ID, sc)
 	return sc, nil
 }
 
@@ -567,9 +585,9 @@ func (h *Hub) FileScan(ctx context.Context, id string, req FileRequest) (*store.
 		return nil, err
 	}
 	filed := store.Filed{TaskID: task, Status: "pending", At: time.Now()}
-	title := sc.Title
 	// save stores a copy of the filing state, so the scan handed back to the
-	// caller is never changed by the goroutine that follows the import.
+	// caller is never changed by the goroutine that follows the import. An
+	// untitled scan takes the title it was filed under.
 	save := func(f store.Filed) *store.Scan {
 		h.scanMu.Lock()
 		defer h.scanMu.Unlock()
@@ -577,9 +595,12 @@ func (h *Hub) FileScan(ctx context.Context, id string, req FileRequest) (*store.
 		if err != nil {
 			return nil
 		}
-		cur.Paperless, cur.Title = &f, title
+		cur.Paperless = &f
+		if cur.Title == "" {
+			cur.Title = up.Title
+		}
 		_ = h.store.SaveScan(cur)
-		h.events.publish(Event{Type: "scan", ID: cur.ID, Data: cur})
+		h.events.publish("scan", cur.ID, cur)
 		return cur
 	}
 	follow := func(ctx context.Context) *store.Scan {
@@ -604,7 +625,9 @@ func (h *Hub) FileScan(ctx context.Context, id string, req FileRequest) (*store.
 		sc = cur
 	}
 	if req.Wait {
-		if cur := follow(ctx); cur != nil {
+		// The import is followed to its end even when the caller goes away, so
+		// the stored state says what happened in Paperless, not "canceled".
+		if cur := follow(context.WithoutCancel(ctx)); cur != nil {
 			sc = cur
 		}
 	} else {

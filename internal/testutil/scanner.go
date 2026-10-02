@@ -47,6 +47,9 @@ type Scanner struct {
 	Requests []string          // ScanSettings documents received
 	// Busy makes the scanner refuse new jobs with 503.
 	Busy bool
+	// OnJob, when set, runs when a scan job is created, before its page can be
+	// fetched: a test can do something "while the scanner works".
+	OnJob func()
 }
 
 // NewScanner starts a fake scanner.
@@ -99,6 +102,11 @@ func (s *Scanner) serve(w http.ResponseWriter, r *http.Request) {
 		s.next++
 		id := fmt.Sprintf("job-%d", s.next)
 		s.jobs[id] = page(width, height, s.next, bytes.Contains(body, []byte("Grayscale8")))
+		if s.OnJob != nil {
+			s.mu.Unlock()
+			s.OnJob()
+			s.mu.Lock()
+		}
 		// Like real scanners, answer with a host name the client can't resolve.
 		w.Header().Set("Location", "http://scanner-with-mdns-name.local/eSCL/ScanJobs/"+id)
 		w.WriteHeader(http.StatusCreated)

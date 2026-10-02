@@ -23,12 +23,24 @@ const token = "a-long-enough-test-token"
 
 type fixture struct {
 	srv     *httptest.Server
+	cfg     *config.Config
 	printer *testutil.Printer
 	scanner *testutil.Scanner
 	token   string
 }
 
 func newFixture(t *testing.T, withAuth bool) *fixture {
+	t.Helper()
+	return newFixtureWith(t, func(cfg *config.Config) {
+		if withAuth {
+			cfg.Auth.Tokens = []string{token}
+		}
+	})
+}
+
+// newFixtureWith starts Platen with fake devices. tweak may change the
+// configuration before it is validated.
+func newFixtureWith(t *testing.T, tweak func(*config.Config)) *fixture {
 	t.Helper()
 	f := &fixture{printer: testutil.NewRasterPrinter(t), scanner: testutil.NewScanner(t)}
 	pl := testutil.NewPaperless(t)
@@ -38,8 +50,9 @@ func newFixture(t *testing.T, withAuth bool) *fixture {
 	cfg.Printers = []config.Printer{{ID: "inkjet", Name: "Inkjet", URI: f.printer.URI()}}
 	cfg.Scanners = []config.Scanner{{ID: "flatbed", Name: "Flatbed", URL: f.scanner.BaseURL()}}
 	cfg.Paperless = config.Paperless{URL: pl.URL, Token: testutil.PaperlessToken}
-	if withAuth {
-		cfg.Auth.Tokens, f.token = []string{token}, token
+	tweak(cfg)
+	if len(cfg.Auth.Tokens) > 0 {
+		f.token = cfg.Auth.Tokens[0]
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -48,6 +61,7 @@ func newFixture(t *testing.T, withAuth bool) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.cfg = cfg
 	t.Cleanup(func() { h.Close() })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	f.srv = httptest.NewServer(api.New(h, log, "test", http.NotFoundHandler()).Handler())
@@ -259,6 +273,102 @@ func TestAccessControl(t *testing.T) {
 	resp, _ = http.DefaultClient.Do(req)
 	if resp.StatusCode != 200 {
 		t.Errorf("cookie session: %d", resp.StatusCode)
+	}
+	// With tokens only, the name Platen is reached under does not matter: nothing
+	// is served without the token anyway, and the login page must still load.
+	f.token = ""
+	if status, _ := f.do(t, "GET", "/api/v1/printers", nil, "Host", "print.example.net"); status != 401 {
+		t.Errorf("no token under another name: %d", status)
+	}
+	req, _ = http.NewRequest("GET", f.srv.URL+"/", nil)
+	req.Host = "print.example.net"
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Errorf("interface under another name: %v", err)
+	}
+}
+
+func TestTrustedNetwork(t *testing.T) {
+	// The test client connects from 127.0.0.1.
+	f := newFixtureWith(t, func(cfg *config.Config) {
+		cfg.Auth.Tokens = []string{token}
+		cfg.Auth.TrustedNetworks = []string{"127.0.0.0/8"}
+	})
+	good := f.token
+	f.token = ""
+	status, out := f.do(t, "GET", "/api/v1/info", nil)
+	if status != 200 || out["trusted"] != true || out["auth"] != true {
+		t.Fatalf("a client in a trusted network needs no token: %d %v", status, out)
+	}
+	// What gets in without a token is only served under a known name.
+	if status, out := f.do(t, "GET", "/api/v1/printers", nil, "Host", "evil.example"); status != 421 || errorCode(out) != "unknown_host" {
+		t.Errorf("trusted client, foreign host name: %d %v", status, out)
+	}
+	// A forwarding header means a proxy Platen was not told about stands in
+	// front: its address says nothing about the client.
+	if status, _ := f.do(t, "GET", "/api/v1/printers", nil, "X-Forwarded-For", "127.0.0.1"); status != 401 {
+		t.Errorf("request through an undeclared proxy: %d", status)
+	}
+	f.token = good
+	status, out = f.do(t, "GET", "/api/v1/info", nil, "Host", "evil.example", "X-Forwarded-For", "203.0.113.9")
+	if status != 200 || out["trusted"] != false {
+		t.Errorf("a valid token works from anywhere and under any name: %d %v", status, out)
+	}
+}
+
+func TestTrustedNetworkBehindProxy(t *testing.T) {
+	f := newFixtureWith(t, func(cfg *config.Config) {
+		cfg.Auth.Tokens = []string{token}
+		cfg.Auth.TrustedNetworks = []string{"192.168.30.0/24"}
+		cfg.Server.TrustedProxies = []string{"127.0.0.1"}
+	})
+	f.token = ""
+	for forwarded, want := range map[string]int{
+		"192.168.30.7":              200, // a phone at home
+		"192.168.30.7:51234":        200, // some proxies add the port
+		"203.0.113.9":               401, // someone on the internet
+		"192.168.30.7, 203.0.113.9": 401, // the entry the proxy added counts, not what the client claimed
+		"203.0.113.9, 192.168.30.7": 200,
+		"192.168.30.7, 127.0.0.1":   200, // two of our own proxies in a row
+		"not-an-address":            401,
+		"":                          401, // the proxy itself is never a client
+	} {
+		var headers []string
+		if forwarded != "" {
+			headers = []string{"X-Forwarded-For", forwarded}
+		}
+		if status, _ := f.do(t, "GET", "/api/v1/printers", nil, headers...); status != want {
+			t.Errorf("X-Forwarded-For %q: got %d, want %d", forwarded, status, want)
+		}
+	}
+}
+
+func TestTrustedNetworkWithoutTokens(t *testing.T) {
+	// Only the trusted network gets in; there is no token anyone else could use.
+	f := newFixtureWith(t, func(cfg *config.Config) { cfg.Auth.TrustedNetworks = []string{"10.99.0.0/16"} })
+	status, out := f.do(t, "GET", "/api/v1/printers", nil)
+	if status != 401 || !strings.Contains(out["error"].(map[string]any)["message"].(string), "trusted networks") {
+		t.Errorf("client outside the trusted network: %d %v", status, out)
+	}
+	if status, _ := f.do(t, "POST", "/api/v1/login", map[string]any{"token": "anything-at-all-0123"}); status != 401 {
+		t.Errorf("login without configured tokens: %d", status)
+	}
+	// The interface itself still loads, so the person sees why.
+	if status, _ := f.do(t, "GET", "/healthz", nil); status != 200 {
+		t.Errorf("healthz: %d", status)
+	}
+}
+
+func TestInfoDoesNotChangeTheConfiguration(t *testing.T) {
+	f := newFixture(t, false)
+	for range 2 {
+		_, out := f.do(t, "GET", "/api/v1/info", nil)
+		if uri := out["printers"].([]any)[0].(map[string]any)["uri"].(string); uri == "" || strings.Contains(uri, "/ipp/") {
+			t.Fatalf("printer address in info: %q", uri)
+		}
+	}
+	// The answer hides the path of the device addresses; the configuration keeps it.
+	if f.cfg.Printers[0].URI != f.printer.URI() || f.cfg.Scanners[0].URL != f.scanner.BaseURL() {
+		t.Errorf("info changed the configuration: %q %q", f.cfg.Printers[0].URI, f.cfg.Scanners[0].URL)
 	}
 }
 

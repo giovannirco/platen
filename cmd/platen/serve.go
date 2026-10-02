@@ -48,9 +48,13 @@ func cmdServe(ctx context.Context, args []string) error {
 		return err
 	}
 	log.Info("Platen is running", "version", version, "listen", ln.Addr().String(), "url", cfg.Server.BaseURL, "mcp", cfg.Server.BaseURL+"/mcp",
-		"printers", len(cfg.Printers), "scanners", len(cfg.Scanners), "paperless", h.PaperlessEnabled(), "auth", len(cfg.Auth.Tokens) > 0)
-	if len(cfg.Auth.Tokens) == 0 {
-		log.Warn("no access token is set: anyone who can reach this address can print and scan (set auth.tokens or PLATEN_AUTH_TOKENS)")
+		"printers", len(cfg.Printers), "scanners", len(cfg.Scanners), "paperless", h.PaperlessEnabled(),
+		"tokens", len(cfg.Auth.Tokens), "trusted_networks", cfg.Auth.TrustedNetworks)
+	switch {
+	case cfg.Auth.Open():
+		log.Warn("no access token and no trusted network is set: anyone who can reach this address can print and scan (set auth.tokens or auth.trusted_networks)")
+	case len(cfg.Auth.Tokens) == 0:
+		log.Info("no access token is set: only clients in the trusted networks can use Platen")
 	}
 
 	errCh := make(chan error, 1)

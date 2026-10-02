@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -50,7 +49,6 @@ type scanOut struct {
 	DocumentURL string    `json:"document_url" jsonschema:"address where a person can download the PDF"`
 	Resource    string    `json:"resource" jsonschema:"MCP resource URI of the PDF"`
 	Paperless   *filedOut `json:"paperless,omitempty"`
-	Preview     string    `json:"preview,omitempty" jsonschema:"small picture of the last page as a data URL, for display"`
 	Message     string    `json:"message"`
 }
 
@@ -65,11 +63,6 @@ func (s *server) scanOutput(sc *store.Scan, message string) *scanOut {
 	}
 	if f := sc.Paperless; f != nil {
 		out.Paperless = &filedOut{Status: f.Status, DocumentID: f.DocumentID, URL: f.URL, Message: f.Message}
-	}
-	if n := len(sc.Pages); n > 0 {
-		if data, err := s.hub.PageImage(sc.ID, sc.Pages[n-1].ID, 480); err == nil {
-			out.Preview = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
-		}
 	}
 	return out
 }
@@ -240,9 +233,7 @@ func (s *server) addScanTools(srv *mcp.Server) {
 		out := scansOut{Scans: []scanOut{}}
 		msg := fmt.Sprintf("%d scan(s).", len(list))
 		for _, sc := range list {
-			o := s.scanOutput(sc, "")
-			o.Preview = "" // a list does not need the pictures
-			out.Scans = append(out.Scans, *o)
+			out.Scans = append(out.Scans, *s.scanOutput(sc, ""))
 			filed := ""
 			if sc.Paperless != nil {
 				filed = ", Paperless: " + sc.Paperless.Status
@@ -278,9 +269,7 @@ func (s *server) addScanTools(srv *mcp.Server) {
 		default:
 			msg = "The scan was sent to Paperless-ngx, which is still importing it."
 		}
-		out := s.scanOutput(sc, msg)
-		out.Preview = ""
-		return &mcp.CallToolResult{Content: text("%s", msg)}, out, nil
+		return &mcp.CallToolResult{Content: text("%s", msg)}, s.scanOutput(sc, msg), nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{

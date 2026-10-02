@@ -1,17 +1,19 @@
 package hub
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 )
 
 // Event is something that happened, sent to listeners (the web UI's live updates).
 type Event struct {
-	// Type is one of: printer, job, scan, scan.deleted.
+	// Type is one of: job, scan, scan.deleted.
 	Type string    `json:"type"`
 	ID   string    `json:"id,omitempty"`
 	At   time.Time `json:"at"`
-	Data any       `json:"data,omitempty"`
+	// Data is the job or scan as JSON, as it was when the event happened.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // broker fans events out to subscribers. Slow subscribers lose events rather
@@ -23,8 +25,17 @@ type broker struct {
 
 func newBroker() *broker { return &broker{subs: map[chan Event]struct{}{}} }
 
-func (b *broker) publish(e Event) {
-	e.At = time.Now()
+// publish sends an event to every subscriber. data is encoded here, in the
+// caller's goroutine, so listeners never read a value that is still changing.
+func (b *broker) publish(kind, id string, data any) {
+	e := Event{Type: kind, ID: id, At: time.Now()}
+	if data != nil {
+		raw, err := json.Marshal(data)
+		if err != nil {
+			return
+		}
+		e.Data = raw
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for ch := range b.subs {

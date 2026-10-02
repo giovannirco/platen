@@ -75,11 +75,16 @@
 
   function note(text, kind) { const n = $('note'); n.textContent = text || ''; n.className = 'note' + (kind ? ' ' + kind : ''); }
 
-  function render(s) {
+  // A tool result carries the scan as structured content and the newest pages
+  // as pictures; the last picture is the page that was just scanned.
+  function render(result) {
+    const s = result && result.structuredContent;
     if (!s || !s.scan_id) return;
     scan = s;
     $('empty').hidden = true; $('view').hidden = false;
-    if (s.preview) $('preview').src = s.preview;
+    const pictures = (result.content || []).filter((c) => c.type === 'image' && c.data);
+    const last = pictures[pictures.length - 1];
+    if (last) $('preview').src = 'data:' + (last.mimeType || 'image/jpeg') + ';base64,' + last.data;
     $('count').textContent = s.page_count + (s.page_count === 1 ? ' page' : ' pages');
     $('title').textContent = s.title || 'Untitled scan';
     $('meta').textContent = [s.color === 'gray' ? 'Gray' : 'Colour', s.dpi + ' dpi', s.scan_id].join(' · ');
@@ -107,7 +112,7 @@
       return;
     }
     switch (m.method) {
-      case 'ui/notifications/tool-result': render(m.params && m.params.structuredContent); break;
+      case 'ui/notifications/tool-result': render(m.params); break;
       case 'ui/notifications/host-context-changed': theme(m.params); break;
       case 'ui/resource-teardown': if (m.id !== undefined) post({ id: m.id, result: {} }); break;
       case 'ping': if (m.id !== undefined) post({ id: m.id, result: {} }); break;
@@ -120,7 +125,7 @@
     try {
       const res = await request('tools/call', { name: 'scan_document', arguments: { scan_id: scan.scan_id } });
       if (res && res.isError) throw new Error(res.content && res.content[0] && res.content[0].text || 'the scan failed');
-      render(res && res.structuredContent);
+      render(res);
       note('Page ' + scan.page_count + ' added.', 'ok');
     } catch (err) {
       note(err.message, 'bad');

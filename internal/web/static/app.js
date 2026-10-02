@@ -119,8 +119,10 @@ function bytes(n) {
 
 const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
+const segAttr = (el) => (el.getAttribute('role') === 'tablist' ? 'aria-selected' : 'aria-pressed');
+
 function seg(el, onChange) {
-  const attr = el.getAttribute('role') === 'tablist' ? 'aria-selected' : 'aria-pressed';
+  const attr = segAttr(el);
   el.addEventListener('click', (ev) => {
     const b = ev.target.closest('button');
     if (!b || b.disabled) return;
@@ -128,6 +130,12 @@ function seg(el, onChange) {
     onChange?.(b.dataset.v ?? b.dataset.source);
   });
   return () => $(`button[${attr}="true"]`, el)?.dataset.v;
+}
+
+// setSeg presses the button of a segmented control that carries value.
+function setSeg(el, value) {
+  const attr = segAttr(el);
+  for (const b of $$('button', el)) b.setAttribute(attr, String((b.dataset.v ?? b.dataset.source) === String(value)));
 }
 
 function confirmDialog(title, text, okLabel) {
@@ -144,6 +152,7 @@ function confirmDialog(title, text, okLabel) {
 
 const state = {
   info: null, printers: [], scanners: [], jobs: [], scans: [],
+  devicesKey: '',        // what the device lists looked like when last rendered
   meta: null,            // Paperless tags, correspondents, types
   print: { source: 'file', file: null, paperlessId: 0, copies: 1, check: null },
   scan: null,            // the scan being worked on
@@ -461,10 +470,25 @@ function showPage(pageId) {
   for (const t of $$('.thumb')) t.setAttribute('aria-current', String(t.dataset.page === pageId));
 }
 
+// applyScanSettings shows the settings a scan was made with, so that a scan
+// opened from the list (or continued later) reads as it is, not as the defaults.
+function applyScanSettings(sc, { title = true } = {}) {
+  if (!sc) return;
+  if (sc.scanner && $('#scan-scanner').value !== sc.scanner) { $('#scan-scanner').value = sc.scanner; renderScanners(); }
+  setSeg($('#scan-color'), sc.color);
+  setSeg($('#scan-dpi'), sc.dpi);
+  const paper = $('#scan-paper');
+  if (sc.paper && ![...paper.options].some((o) => o.value === sc.paper)) paper.append(h('option', { value: sc.paper }, `${sc.paper} mm`));
+  if (sc.paper) paper.value = sc.paper;
+  if (title) $('#scan-title').value = sc.title || '';
+}
+
 function renderScan() {
   const sc = state.scan;
   const strip = $('#strip');
   const pages = sc?.pages || [];
+  // The title is left alone while it is being typed.
+  applyScanSettings(sc, { title: document.activeElement !== $('#scan-title') });
   strip.replaceChildren(...pages.map((p, i) => h('div', { class: 'thumb', 'data-page': p.id, 'aria-current': String(p.id === state.page), onclick: () => showPage(p.id) },
     h('img', { src: `/api/v1/scans/${sc.id}/pages/${p.id}/image?size=480`, alt: `Page ${i + 1}` }),
     h('span', { class: 'thumb-n' }, String(i + 1)),
@@ -587,17 +611,31 @@ function resetScan() {
   renderScan();
 }
 
+function currentScanner() {
+  const id = $('#scan-scanner').value;
+  return state.scanners.find((s) => s.id === id) || state.scanners.find((s) => s.default) || state.scanners[0];
+}
+
 function renderScanners() {
   const sel = $('#scan-scanner');
-  sel.replaceChildren(...state.scanners.map((s) => h('option', { value: s.id, selected: s.default }, s.name)));
+  const keep = sel.value;
+  sel.replaceChildren(...state.scanners.map((s) => h('option', { value: s.id, selected: keep ? s.id === keep : s.default }, s.name + (s.online ? '' : ' (offline)'))));
   $('#scan-scanner-wrap').hidden = state.scanners.length < 2;
-  const s = state.scanners.find((x) => x.default) || state.scanners[0];
-  for (const b of $$('#scan-dpi button')) b.hidden = !!s?.resolutions?.length && !s.resolutions.includes(Number(b.dataset.v));
+  const s = currentScanner();
+  const buttons = $$('#scan-dpi button');
+  for (const b of buttons) b.hidden = !!s?.resolutions?.length && !s.resolutions.includes(Number(b.dataset.v));
+  // A pressed choice the scanner doesn't offer gives way to the first it does.
+  if (!buttons.some((b) => !b.hidden && b.getAttribute('aria-pressed') === 'true')) {
+    const first = buttons.find((b) => !b.hidden);
+    if (first) setSeg($('#scan-dpi'), first.dataset.v);
+  }
   $('#btn-scan').disabled = !s?.online;
+  $('#btn-scan').title = s?.online ? '' : 'The scanner is not reachable';
 }
 
 function initScan() {
   $('#btn-scan').addEventListener('click', (ev) => doScan(ev.currentTarget));
+  $('#scan-scanner').addEventListener('change', renderScanners);
   $('#btn-file').addEventListener('click', (ev) => fileScan(ev.currentTarget).catch((err) => toast(err.message, { bad: true })));
   $('#btn-copy').addEventListener('click', (ev) => copyScan(ev.currentTarget));
   $('#btn-newscan').addEventListener('click', resetScan);
@@ -610,6 +648,11 @@ function initScan() {
 async function refreshDevices() {
   const [p, s] = await Promise.all([api('GET', '/printers'), api('GET', '/scanners')]);
   state.printers = p.printers; state.scanners = s.scanners;
+  // Nothing is re-rendered while nothing changed, so an open menu or a
+  // half-made choice survives the regular refresh.
+  const key = JSON.stringify([p.printers, s.scanners]);
+  if (key === state.devicesKey) return;
+  state.devicesKey = key;
   renderHome(); renderPrintOptions(); renderScanners();
 }
 async function refreshJobs() { state.jobs = (await api('GET', '/jobs?limit=30')).jobs; renderHome(); renderActivity(); }
@@ -643,7 +686,7 @@ async function route() {
     try {
       state.scan = await api('GET', `/scans/${arg}`);
       state.page = state.scan.pages.at(-1)?.id || null;
-      $('#scan-title').value = state.scan.title || '';
+      applyScanSettings(state.scan);
     } catch { state.scan = null; }
   }
   if (name === 'scan') renderScan();
@@ -666,6 +709,9 @@ function initChrome() {
     $('#mcp-url').textContent = i.mcp_url;
     $('#mcp-claude').textContent = `claude mcp add --transport http platen ${i.mcp_url}${auth}`;
     $('#api-curl').textContent = `curl ${i.auth ? '-H "Authorization: Bearer <token>" ' : ''}-F file=@document.pdf -F copies=1 ${i.base_url}/api/v1/print`;
+    const note = $('#connect-note');
+    note.hidden = !i.trusted;
+    note.textContent = i.trusted ? 'This device is on a trusted network, so it needs no token. Agents and scripts on other networks do.' : '';
     $('#dlg-connect').showModal();
   });
 }

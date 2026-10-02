@@ -8,14 +8,24 @@ server:
   base_url: "http://platen.lan:8080"
   # Scans and the print history are kept here.
   data_dir: "./data"
-  # Extra host names Platen may be reached under (only checked when auth.tokens is empty).
+  # Extra host names Platen may be reached under. Requests that get in without a
+  # token (open mode, or a client in a trusted network) are only served under a
+  # name Platen knows: an IP address, localhost, a .local name, the host of
+  # base_url or one of these. That stops DNS-rebinding attacks from web pages.
   # allowed_hosts: ["print.example.net"]
+  # Reverse proxies in front of Platen (addresses or networks). Only from these
+  # is the client address read from X-Forwarded-For, which trusted_networks needs.
+  # trusted_proxies: ["10.0.0.5", "fd00:1::/64"]
 
 auth:
   # Bearer tokens for the API, the web interface and the MCP endpoint.
-  # Leave empty only on a network you trust: without a token, anyone who can
-  # reach Platen can print and scan. Generate one with: openssl rand -hex 24
+  # Generate one with: openssl rand -hex 24
   tokens: []
+  # Networks whose clients need no token, for example the home network: phones
+  # and laptops there just open the web interface, while agents and scripts on
+  # other networks present a token. With neither tokens nor trusted networks,
+  # anyone who can reach Platen can print and scan.
+  # trusted_networks: ["192.168.1.0/24"]
 
 printers:
   # A printer that speaks IPP (anything with AirPrint, Mopria or IPP Everywhere)...

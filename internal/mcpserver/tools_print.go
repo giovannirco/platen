@@ -193,7 +193,8 @@ func (s *server) addPrintTools(srv *mcp.Server) {
 			"PDF, JPEG, PNG and plain text work on every printer; Platen converts them when the printer can't read them itself. " +
 			"This uses real paper and ink, so print only what the person asked for. Use dry_run first for anything large. " +
 			"Jobs above the sheet threshold need the person's agreement.",
-		Annotations: additive("Print a document"),
+		// It can download the document from any web address it is given.
+		Annotations: reaching("Print a document"),
 		InputSchema: printSchema,
 	}, s.printDocument)
 

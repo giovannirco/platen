@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -407,5 +408,121 @@ func TestJobIsFollowedToCompletion(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("job never reached completed: %+v", f.hub.History(1))
 		}
+	}
+}
+
+func TestScanKeepsChangesMadeMeanwhile(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	sc, err := f.hub.StartScan(ctx, hub.ScanRequest{Resolution: 75})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The person renames the document while the scanner is busy with page 2.
+	f.scanner.OnJob = func() {
+		if _, err := f.hub.RenameScan(sc.ID, "Renamed meanwhile"); err != nil {
+			t.Error(err)
+		}
+	}
+	sc, err = f.hub.ScanNextPage(ctx, sc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Title != "Renamed meanwhile" || len(sc.Pages) != 2 {
+		t.Errorf("the rename was lost: title=%q pages=%d", sc.Title, len(sc.Pages))
+	}
+	if stored, _ := f.hub.Scan(sc.ID); stored.Title != "Renamed meanwhile" || len(stored.Pages) != 2 {
+		t.Errorf("on disk: title=%q pages=%d", stored.Title, len(stored.Pages))
+	}
+	// A scan deleted while its page is being scanned is reported, not recreated.
+	f.scanner.OnJob = func() { _ = f.hub.DeleteScan(sc.ID) }
+	if _, err := f.hub.ScanNextPage(ctx, sc.ID); !errors.Is(err, hub.ErrNotFound) {
+		t.Errorf("deleted meanwhile: got %v", err)
+	}
+	if _, err := os.Stat(f.hub.Config().Server.DataDir + "/scans/" + sc.ID); !os.IsNotExist(err) {
+		t.Error("the deleted scan came back")
+	}
+}
+
+func TestOfflineDevicesCostOneTimeout(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	f.raster.Down.Store(true)
+	before := f.raster.Requests()
+	for range 5 {
+		if p, _ := f.hub.Printer(ctx, "inkjet"); p.Online {
+			t.Fatal("a printer that answers with errors is reported online")
+		}
+	}
+	if n := f.raster.Requests() - before; n != 1 {
+		t.Errorf("five status checks of a printer that is down reached it %d times, want 1", n)
+	}
+	// A print job also fails at once instead of trying the printer again.
+	if _, err := f.hub.Print(ctx, hub.PrintRequest{Source: hub.Source{Text: "hi"}}); err == nil || !strings.Contains(err.Error(), "not reachable") {
+		t.Errorf("printing to a printer that is down: %v", err)
+	}
+	// The scanner's reachability is checked on every status call; one that
+	// stopped answering shows as offline even though its capabilities are known.
+	if s, _ := f.hub.Scanner(ctx, "flatbed"); !s.Online {
+		t.Fatalf("scanner should be online: %+v", s)
+	}
+	f.scanner.Close()
+	time.Sleep(1100 * time.Millisecond) // the last answer is kept for a second
+	if s, _ := f.hub.Scanner(ctx, "flatbed"); s.Online || s.Error == "" {
+		t.Errorf("scanner that went away still online: %+v", s)
+	}
+}
+
+func TestDocumentsThatAreNotDocuments(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	html := []byte("<!doctype html><html><body><h1>Hello</h1></body></html>")
+	_, err := f.hub.Print(ctx, hub.PrintRequest{Source: hub.Source{Data: html, Name: "page.html"}, DryRun: true})
+	if !errors.Is(err, hub.ErrUnsupported) || !strings.Contains(err.Error(), "web page") {
+		t.Errorf("HTML: got %v, want an unsupported-document error that says it is a web page", err)
+	}
+	// Old text files in a Windows encoding print as text, with their accents.
+	latin := []byte("Caf\xe9 cr\xe8me \x96 3 \x80\n")
+	res, err := f.hub.Print(ctx, hub.PrintRequest{Source: hub.Source{Data: latin, Name: "menu.txt"}, DryRun: true})
+	if err != nil || res.Pages != 1 || res.Format != "image/pwg-raster" {
+		t.Errorf("Windows-1252 text: %+v %v", res, err)
+	}
+}
+
+func TestHiddenNamesOnlyBelowTheAllowedDirectory(t *testing.T) {
+	// The allowed directory itself may live under a hidden parent.
+	parent := t.TempDir()
+	dir := filepath.Join(parent, ".config", "print-queue")
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t, func(c *config.Config) { c.Fetch.AllowedDirs = []string{dir} })
+	ctx := context.Background()
+	doc := testPDF(t, 1)
+	for _, name := range []string{"ok.pdf", "sub/also-ok.pdf", ".hidden.pdf", "sub/.hidden.pdf"} {
+		if err := os.WriteFile(filepath.Join(dir, name), doc, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]bool{"ok.pdf": true, "sub/also-ok.pdf": true, ".hidden.pdf": false, "sub/.hidden.pdf": false} {
+		_, err := f.hub.Print(ctx, hub.PrintRequest{Printer: "laser", Source: hub.Source{Path: filepath.Join(dir, name)}, DryRun: true})
+		if (err == nil) != want {
+			t.Errorf("%s: allowed=%t, err=%v", name, want, err)
+		}
+	}
+}
+
+func TestPageSelectionOnPrinterThatDropsPages(t *testing.T) {
+	f := newFixture(t, nil)
+	f.pdf.PageRanges = true
+	ctx := context.Background()
+	// Overlapping and repeated input becomes clean ranges for the printer.
+	res, err := f.hub.Print(ctx, hub.PrintRequest{Printer: "laser", Source: hub.Source{Data: testPDF(t, 6)}, Pages: "1-2,2-3,5,6"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := f.pdf.Jobs()
+	if res.Pages != 5 || res.Format != "application/pdf" || jobs[0].Attrs["page-ranges"] != "[1-3,5-6]" {
+		t.Errorf("result %+v, page-ranges sent: %q", res, jobs[0].Attrs["page-ranges"])
 	}
 }

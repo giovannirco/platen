@@ -323,8 +323,10 @@ func TestScanShowsThePageAndCanAskForMore(t *testing.T) {
 			if images != 2 || links != 1 {
 				t.Errorf("content: %d picture(s), %d link(s)", images, links)
 			}
-			if p, _ := out["preview"].(string); !strings.HasPrefix(p, "data:image/jpeg;base64,") {
-				t.Error("no preview for the in-chat view")
+			// The structured result stays small: the in-chat view takes its picture
+			// from the content, not from a copy in the structured output.
+			if _, has := out["preview"]; has {
+				t.Error("structured output carries a picture")
 			}
 			id := out["scan_id"].(string)
 			if out["document_url"] != "http://platen.test:8080/api/v1/scans/"+id+"/document" {

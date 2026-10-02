@@ -237,7 +237,7 @@ func (h *Hub) Print(ctx context.Context, req PrintRequest) (*PrintResult, error)
 	if err := h.store.AddJob(rec); err != nil {
 		h.log.Warn("could not record print job", "error", err)
 	}
-	h.events.publish(Event{Type: "job", ID: rec.ID, Data: rec})
+	h.events.publish("job", rec.ID, rec)
 	go h.watchJob(dev, rec.ID, job.ID)
 
 	res.ID, res.PrinterJobID, res.State = rec.ID, job.ID, job.State
@@ -404,6 +404,7 @@ func (h *Hub) plan(ctx context.Context, dev *printerDev, attrs *ipp.Printer, doc
 		// The printer has to drop pages itself; if it can't, Platen rasterizes instead.
 		switch {
 		case attrs.PageRanges && sort.IntsAreSorted(pages):
+			pl.ranges = pageRanges(pages)
 		case raster && doc.kind == "pdf":
 			pl.strategy, pl.format = "raster", "image/pwg-raster"
 			pl.native, pl.scale = pickResolution(attrs.RasterDPI, pl.quality)
@@ -512,6 +513,20 @@ func parsePages(spec string, total int) (pages []int, ranges [][2]int, err error
 		return nil, nil, invalid("pages %q selects nothing", spec)
 	}
 	return pages, ranges, nil
+}
+
+// pageRanges turns ascending 0-based page indexes into the 1-based, inclusive,
+// non-overlapping ranges that IPP's page-ranges attribute requires.
+func pageRanges(pages []int) [][2]int {
+	var out [][2]int
+	for _, p := range pages {
+		if n := len(out); n > 0 && out[n-1][1] == p {
+			out[n-1][1] = p + 1
+			continue
+		}
+		out = append(out, [2]int{p + 1, p + 1})
+	}
+	return out
 }
 
 func (h *Hub) submit(ctx context.Context, pl *plan) (*ipp.Job, error) {
@@ -634,6 +649,7 @@ func (h *Hub) watchJob(dev *printerDev, id string, printerJob int) {
 	for {
 		select {
 		case <-ctx.Done():
+			h.updateJob(id, "unknown", "the job took longer than Platen follows a job; see the printer for its state")
 			return
 		case <-time.After(delay):
 		}
@@ -665,7 +681,7 @@ func (h *Hub) updateJob(id, state, message string) {
 		}
 	})
 	if err == nil && changed {
-		h.events.publish(Event{Type: "job", ID: id, Data: rec})
+		h.events.publish("job", id, rec)
 	}
 }
 

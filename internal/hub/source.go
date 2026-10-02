@@ -20,6 +20,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/text/encoding/charmap"
+
 	"github.com/giovannirco/platen/internal/config"
 )
 
@@ -133,14 +135,24 @@ func (h *Hub) load(ctx context.Context, src Source) (*document, error) {
 		return nil, invalid("the document is empty")
 	}
 	kind, detected := sniff(data, mimeType)
-	if kind == "" {
+	switch {
+	case kind == "" && (strings.HasPrefix(detected, "text/html") || strings.HasPrefix(detected, "text/xml")):
+		return nil, fmt.Errorf("%w: this is a web page (%s), which Platen can't lay out; save or export it as PDF and print that", ErrUnsupported, strings.SplitN(detected, ";", 2)[0])
+	case kind == "":
 		return nil, fmt.Errorf("%w: %s documents can't be printed; use PDF, JPEG, PNG, GIF, TIFF, WebP, BMP or plain text", ErrUnsupported, detected)
+	}
+	if kind == "text" && !utf8.Valid(data) {
+		// Text that is not UTF-8 is almost always an old Windows or Latin-1 file.
+		if converted, err := charmap.Windows1252.NewDecoder().Bytes(data); err == nil {
+			data = converted
+		}
 	}
 	return &document{name: orDefault(name, "document"), kind: kind, mime: detected, data: data, from: from}, nil
 }
 
 // sniff decides what a document is from its first bytes. The declared type is
-// only used to accept plain text.
+// only used to accept plain text that doesn't look like text at first sight.
+// Web pages are not text: printing their source helps nobody.
 func sniff(data []byte, declared string) (kind, mimeType string) {
 	if bytes.HasPrefix(data, []byte("%PDF-")) || bytes.Contains(data[:min(len(data), 1024)], []byte("%PDF-")) {
 		return "pdf", "application/pdf"
@@ -153,10 +165,12 @@ func sniff(data []byte, declared string) (kind, mimeType string) {
 		return "image", detected
 	case bytes.HasPrefix(data, []byte("II*\x00")) || bytes.HasPrefix(data, []byte("MM\x00*")):
 		return "image", "image/tiff"
-	case strings.HasPrefix(detected, "text/plain") && utf8.Valid(data):
+	case strings.HasPrefix(detected, "text/plain"):
 		return "text", "text/plain"
+	case strings.HasPrefix(detected, "text/"):
+		return "", detected // HTML or XML
 	}
-	if mt, _, err := mime.ParseMediaType(declared); err == nil && strings.HasPrefix(mt, "text/") && utf8.Valid(data) {
+	if mt, _, err := mime.ParseMediaType(declared); err == nil && (mt == "text/plain" || mt == "text/markdown" || mt == "text/csv") && utf8.Valid(data) {
 		return "text", "text/plain"
 	}
 	return "", detected
@@ -185,22 +199,23 @@ func (h *Hub) readAllowedFile(p string, limit int64) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %s", ErrNotFound, p)
 	}
-	allowed := false
+	inside := ""
 	for _, dir := range h.cfg.Fetch.AllowedDirs {
 		root, err := filepath.EvalSymlinks(dir)
 		if err != nil {
 			continue
 		}
-		if rel, err := filepath.Rel(root, real); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			allowed = true
+		if rel, err := filepath.Rel(root, real); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			inside = rel
 			break
 		}
 	}
-	if !allowed {
+	if inside == "" {
 		return nil, "", fmt.Errorf("%w: %s is outside the allowed directories", ErrNotAllowed, p)
 	}
-	for _, part := range strings.Split(real, string(filepath.Separator)) {
-		if strings.HasPrefix(part, ".") && part != "." {
+	// Hidden names below the allowed directory stay private (.ssh, .env, ...).
+	for _, part := range strings.Split(inside, string(filepath.Separator)) {
+		if strings.HasPrefix(part, ".") {
 			return nil, "", fmt.Errorf("%w: hidden files and directories are never read", ErrNotAllowed)
 		}
 	}
@@ -263,11 +278,33 @@ func newFetcher(cfg config.Fetch, limit int64) *fetcher {
 	return f
 }
 
+// notPublic lists address ranges that are not private in the strict sense but
+// never hold a public web server either.
+var notPublic = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),  // carrier-grade NAT
+	netip.MustParsePrefix("192.0.0.0/24"),   // protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and broadcast
+	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64: an IPv4 address in disguise
+	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
+	netip.MustParsePrefix("2002::/16"),      // 6to4: an IPv4 address in disguise
+	netip.MustParsePrefix("2001::/32"),      // Teredo
+	netip.MustParsePrefix("2001:db8::/32"),  // documentation
+	netip.MustParsePrefix("fec0::/10"),      // old site-local
+}
+
 func publicAddr(a netip.Addr) bool {
-	a = a.Unmap()
-	return a.IsValid() && !a.IsPrivate() && !a.IsLoopback() && !a.IsLinkLocalUnicast() &&
-		!a.IsLinkLocalMulticast() && !a.IsMulticast() && !a.IsUnspecified() &&
-		!netip.MustParsePrefix("100.64.0.0/10").Contains(a) // carrier-grade NAT range
+	a = a.Unmap().WithZone("")
+	if !a.IsValid() || a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() {
+		return false
+	}
+	for _, p := range notPublic {
+		if p.Contains(a) {
+			return false
+		}
+	}
+	return true
 }
 
 func (f *fetcher) get(ctx context.Context, rawURL string) (data []byte, name, mimeType string, err error) {

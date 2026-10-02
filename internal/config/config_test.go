@@ -64,6 +64,8 @@ func TestLoadRejectsMistakes(t *testing.T) {
 		"scanner url":  {"scanners:\n  - id: s\n    url: escl://x\n", "http(s)"},
 		"short token":  {"auth:\n  tokens: [short]\n", "16 characters"},
 		"bad base url": {"server:\n  base_url: not-a-url\n", "absolute URL"},
+		"bad network":  {"auth:\n  trusted_networks: ['192.168.1.0/33']\n", "auth.trusted_networks[0]"},
+		"bad proxy":    {"server:\n  trusted_proxies: [the-proxy]\n", "server.trusted_proxies[0]"},
 	} {
 		_, err := Load(write(t, tc.yaml))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -82,5 +84,33 @@ func TestEnvironmentOnly(t *testing.T) {
 	}
 	if len(cfg.Printers) != 1 || !cfg.Printers[0].Default || len(cfg.Scanners) != 1 || len(cfg.Auth.Tokens) != 2 {
 		t.Errorf("config from environment: %+v", cfg)
+	}
+}
+
+func TestTrustedNetworks(t *testing.T) {
+	t.Setenv("PLATEN_TRUSTED_PROXIES", "10.42.0.7, fd00:42::/64")
+	cfg, err := Load(write(t, `
+auth:
+  trusted_networks: ["192.168.30.17/24", "10.42.30.5", "fd12:3456::/48"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range cfg.Auth.TrustedPrefixes {
+		got = append(got, p.String())
+	}
+	// Networks are reduced to their base address; a bare address stands for one host.
+	if want := "192.168.30.0/24 10.42.30.5/32 fd12:3456::/48"; strings.Join(got, " ") != want {
+		t.Errorf("trusted networks: got %v, want %s", got, want)
+	}
+	if len(cfg.Server.ProxyPrefixes) != 2 || cfg.Server.ProxyPrefixes[0].String() != "10.42.0.7/32" {
+		t.Errorf("trusted proxies: %v", cfg.Server.ProxyPrefixes)
+	}
+	if cfg.Auth.Open() {
+		t.Error("a configuration with trusted networks is not open to everyone")
+	}
+	if !Default().Auth.Open() {
+		t.Error("without tokens and trusted networks Platen is open")
 	}
 }

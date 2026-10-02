@@ -114,13 +114,23 @@ Examples for Docker Compose and Kubernetes are in [`deploy/`](deploy/).
 
 ### 3. Protect it
 
-Without a token, anyone who can reach Platen can print and scan. On anything but a trusted network, set at least one token:
+Without a token, anyone who can reach Platen can print and scan. Set at least one token:
 
 ```sh
 export PLATEN_AUTH_TOKENS="$(openssl rand -hex 24)"
 ```
 
 The web interface asks for it once; scripts and agents send `Authorization: Bearer <token>`.
+
+At home you may not want the family to type a token on their phones. List the home network as trusted, and everything else still needs one:
+
+```yaml
+auth:
+  tokens: ["<token for agents and scripts elsewhere>"]
+  trusted_networks: ["192.168.1.0/24"]
+```
+
+If a reverse proxy stands in front of Platen, name it in `server.trusted_proxies`, or every request looks as if it came from the proxy and none is trusted.
 
 ## Connect an AI agent
 
@@ -203,8 +213,8 @@ More in [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Security
 
-- Set `auth.tokens`. The token protects the API, the MCP endpoint and the web interface.
-- Without a token Platen refuses requests addressed to host names it does not know (protection against DNS rebinding) and cross-site browser requests.
+- Set `auth.tokens`. The token protects the API, the MCP endpoint and the web interface. `auth.trusted_networks` lets named networks in without one.
+- A request that gets in without a token is only served under a host name Platen knows (protection against DNS rebinding), and cross-site browser requests are refused.
 - Printing by URL does not reach private, loopback or link-local addresses unless you allow it (`fetch.allow_private_networks`), so Platen can't be used to read your internal network.
 - Printing files by path is off until you list directories in `fetch.allowed_dirs`; hidden files are never read.
 - A printer is a physical thing: the sheet limits exist so that a confused agent or script can't empty the paper tray.

@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -95,7 +96,7 @@ func (s *Server) Handler() http.Handler {
 	// Order matters: reject foreign hosts and cross-site writes before anything else.
 	var h http.Handler = mux
 	h = http.NewCrossOriginProtection().Handler(h)
-	h = s.checkHost(h)
+	h = s.guard(h)
 	h = securityHeaders(h)
 	return s.logRequests(h)
 }
@@ -115,26 +116,132 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// checkHost refuses requests addressed to a host name Platen doesn't know when
-// no access token is configured. Without it, a web page on the internet could
-// reach an open Platen on the local network through DNS rebinding.
-func (s *Server) checkHost(next http.Handler) http.Handler {
-	if len(s.cfg.Auth.Tokens) > 0 || s.hosts["*"] {
-		return next
+// access says how a request is let in.
+type access int
+
+const (
+	accessDenied  access = iota // needs a token and has none
+	accessToken                 // a valid bearer token or session cookie
+	accessOpen                  // neither tokens nor trusted networks are configured
+	accessTrusted               // the client is in a trusted network
+)
+
+type accessKey struct{}
+
+// accessOf returns how the request was let in, as decided by guard.
+func accessOf(r *http.Request) access {
+	a, _ := r.Context().Value(accessKey{}).(access)
+	return a
+}
+
+// classify decides how a request may be let in.
+func (s *Server) classify(r *http.Request) access {
+	switch {
+	case s.hasToken(r):
+		return accessToken
+	case s.cfg.Auth.Open():
+		return accessOpen
 	}
+	if addr, ok := s.clientAddr(r); ok && containsAddr(s.cfg.Auth.TrustedPrefixes, addr) {
+		return accessTrusted
+	}
+	return accessDenied
+}
+
+// guard classifies every request and protects the ones that get in without a
+// token against DNS rebinding.
+//
+// A web page on the internet can make a browser inside the network talk to
+// Platen by giving its own host name Platen's address. The browser then sends
+// that foreign name in the Host header, so a request that carries no token is
+// only served under a name Platen knows. A request with a valid token needs no
+// such check: the page can't know the token, and the session cookie is bound to
+// the name it was set for.
+func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		host = strings.ToLower(strings.Trim(host, "[]"))
-		if net.ParseIP(host) != nil || s.hosts[host] || strings.HasSuffix(host, ".local") || r.URL.Path == "/healthz" {
-			next.ServeHTTP(w, r)
+		a := s.classify(r)
+		if (a == accessOpen || a == accessTrusted) && r.URL.Path != "/healthz" && !s.knownHost(r.Host) {
+			writeError(w, http.StatusMisdirectedRequest, "unknown_host",
+				fmt.Sprintf("Platen was reached as %q, which it does not know. Set server.base_url to this address or add the name to server.allowed_hosts. Requests that carry an access token are not checked.", hostName(r.Host)))
 			return
 		}
-		writeError(w, http.StatusMisdirectedRequest, "unknown_host",
-			fmt.Sprintf("Platen was reached as %q, which it does not know. Set server.base_url to this address, add the name to server.allowed_hosts, or configure auth.tokens.", host))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), accessKey{}, a)))
 	})
+}
+
+func hostName(hostport string) string {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	return strings.ToLower(strings.Trim(host, "[]"))
+}
+
+// knownHost reports whether the Host header names this Platen: an IP address,
+// localhost, a .local name, the host of server.base_url or an allowed host.
+func (s *Server) knownHost(hostport string) bool {
+	if s.hosts["*"] {
+		return true
+	}
+	host := hostName(hostport)
+	return net.ParseIP(host) != nil || s.hosts[host] || strings.HasSuffix(host, ".local")
+}
+
+// clientAddr returns the address the request comes from. ok is false when that
+// address can't be relied on, and the request must then not be trusted for it.
+//
+// The peer of the connection is the client, unless the peer is one of the
+// configured reverse proxies: then the client is the last address in
+// X-Forwarded-For that is not a proxy itself. A forwarding header from any other
+// peer means a proxy stands in front that Platen was not told about. Its address
+// would stand for everyone behind it, so nothing is trusted on its account.
+func (s *Server) clientAddr(r *http.Request) (addr netip.Addr, ok bool) {
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	peer := ap.Addr().Unmap().WithZone("")
+	forwarded := r.Header.Values("X-Forwarded-For")
+	if !containsAddr(s.cfg.Server.ProxyPrefixes, peer) {
+		if len(forwarded) > 0 || r.Header.Get("Forwarded") != "" || r.Header.Get("X-Real-Ip") != "" {
+			return peer, false
+		}
+		return peer, true
+	}
+	var chain []string
+	for _, h := range forwarded {
+		chain = append(chain, strings.Split(h, ",")...)
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		hop, err := parseForwarded(chain[i])
+		if err != nil {
+			return peer, false
+		}
+		if !containsAddr(s.cfg.Server.ProxyPrefixes, hop) {
+			return hop, true
+		}
+	}
+	return peer, false // the proxy did not say who the client is
+}
+
+// parseForwarded reads one X-Forwarded-For entry: an address, optionally with a
+// port or in brackets.
+func parseForwarded(entry string) (netip.Addr, error) {
+	entry = strings.TrimSpace(entry)
+	if ap, err := netip.ParseAddrPort(entry); err == nil {
+		return ap.Addr().Unmap().WithZone(""), nil
+	}
+	a, err := netip.ParseAddr(strings.Trim(entry, "[]"))
+	return a.Unmap().WithZone(""), err
+}
+
+func containsAddr(prefixes []netip.Prefix, a netip.Addr) bool {
+	for _, p := range prefixes {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) logRequests(next http.Handler) http.Handler {
@@ -181,9 +288,10 @@ func (s *Server) validToken(token string) bool {
 	return ok
 }
 
-func (s *Server) authorized(r *http.Request) bool {
+// hasToken reports whether the request carries a valid bearer token or session cookie.
+func (s *Server) hasToken(r *http.Request) bool {
 	if len(s.cfg.Auth.Tokens) == 0 {
-		return true
+		return false
 	}
 	if h := r.Header.Get("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
 		return s.validToken(strings.TrimSpace(h[7:]))
@@ -194,11 +302,16 @@ func (s *Server) authorized(r *http.Request) bool {
 	return false
 }
 
+// authenticate lets a request through when guard found a reason to.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.authorized(r) {
+		if accessOf(r) == accessDenied {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="platen"`)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid access token is required (Authorization: Bearer <token>)")
+			message := "a valid access token is required (Authorization: Bearer <token>)"
+			if len(s.cfg.Auth.Tokens) == 0 {
+				message = "this Platen only serves its trusted networks (auth.trusted_networks), and no access token is configured"
+			}
+			writeError(w, http.StatusUnauthorized, "unauthorized", message)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -212,7 +325,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if len(s.cfg.Auth.Tokens) > 0 && !s.validToken(body.Token) {
+	if !s.validToken(body.Token) {
+		if s.cfg.Auth.Open() {
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) // nothing to log in to
+			return
+		}
 		time.Sleep(500 * time.Millisecond) // slow down guessing
 		writeError(w, http.StatusUnauthorized, "unauthorized", "that token is not valid")
 		return
@@ -306,11 +423,14 @@ func via(r *http.Request) string {
 
 // Info describes this Platen instance.
 type Info struct {
-	Name         string           `json:"name"`
-	Version      string           `json:"version"`
-	BaseURL      string           `json:"base_url"`
-	MCPURL       string           `json:"mcp_url"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	BaseURL string `json:"base_url"`
+	MCPURL  string `json:"mcp_url"`
+	// Auth is true when access tokens are configured. Trusted is true when this
+	// request was let in without one because it comes from a trusted network.
 	Auth         bool             `json:"auth"`
+	Trusted      bool             `json:"trusted"`
 	Paperless    bool             `json:"paperless"`
 	PaperlessURL string           `json:"paperless_url,omitempty"`
 	Limits       config.Limits    `json:"limits"`
@@ -318,12 +438,15 @@ type Info struct {
 	Scanners     []config.Scanner `json:"scanners"`
 }
 
-func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	info := Info{
 		Name: "Platen", Version: s.version, BaseURL: s.cfg.Server.BaseURL, MCPURL: s.cfg.Server.BaseURL + "/mcp",
-		Auth: len(s.cfg.Auth.Tokens) > 0, Paperless: s.hub.PaperlessEnabled(), Limits: s.cfg.Limits,
-		Printers: s.cfg.Printers, Scanners: s.cfg.Scanners,
+		Auth: len(s.cfg.Auth.Tokens) > 0, Trusted: accessOf(r) == accessTrusted,
+		Paperless: s.hub.PaperlessEnabled(), Limits: s.cfg.Limits,
 	}
+	// Copies, so that hiding the device addresses below doesn't change the configuration.
+	info.Printers = append(info.Printers, s.cfg.Printers...)
+	info.Scanners = append(info.Scanners, s.cfg.Scanners...)
 	if info.Paperless {
 		info.PaperlessURL = s.cfg.Paperless.PublicURL
 	}
