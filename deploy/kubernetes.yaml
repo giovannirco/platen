@@ -1,0 +1,105 @@
+# Platen on Kubernetes: one Deployment, one Service, one volume.
+# The pod only needs to reach the printer, the scanner and Paperless over the
+# network; it needs no host access, no USB and no multicast.
+#
+#   kubectl create namespace platen
+#   kubectl -n platen create secret generic platen \
+#     --from-literal=auth-tokens="$(openssl rand -hex 24)" \
+#     --from-literal=paperless-token="<token>"
+#   kubectl -n platen apply -f kubernetes.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platen
+  namespace: platen
+data:
+  platen.yaml: |
+    server:
+      base_url: "https://platen.example.net"
+    printers:
+      - id: inkjet
+        name: "Inkjet"
+        uri: "ipp://192.0.2.20/ipp/print"
+    scanners:
+      - id: flatbed
+        name: "Flatbed"
+        url: "http://192.0.2.20/eSCL"
+    paperless:
+      url: "http://paperless.paperless.svc:8000"
+      public_url: "https://paperless.example.net"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: platen-data
+  namespace: platen
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platen
+  namespace: platen
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # the data volume is ReadWriteOnce
+  selector:
+    matchLabels: {app: platen}
+  template:
+    metadata:
+      labels: {app: platen}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: platen
+          image: ghcr.io/giovannirco/platen:latest
+          args: ["serve", "-config", "/etc/platen/platen.yaml"]
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - name: PLATEN_AUTH_TOKENS
+              valueFrom: {secretKeyRef: {name: platen, key: auth-tokens}}
+            - name: PLATEN_PAPERLESS_TOKEN
+              valueFrom: {secretKeyRef: {name: platen, key: paperless-token}}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            # Rendering a PDF page at 600 dpi needs a few hundred megabytes for a moment.
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/platen, readOnly: true}
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap: {name: platen}
+        - name: data
+          persistentVolumeClaim: {claimName: platen-data}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platen
+  namespace: platen
+spec:
+  selector: {app: platen}
+  ports:
+    - {name: http, port: 80, targetPort: http}

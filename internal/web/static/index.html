@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f1e8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121214" media="(prefers-color-scheme: dark)">
+  <title>Platen</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <a class="brand" href="#/" aria-label="Platen home">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="3" y="6" width="26" height="20" rx="5" class="logo-body"/>
+        <rect x="7" y="10" width="18" height="12" rx="2" class="logo-glass"/>
+        <rect x="7" y="14.5" width="18" height="3" rx="1.5" class="logo-beam"/>
+      </svg>
+      <span>Platen</span>
+    </a>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#/" data-view="home">Home</a>
+      <a href="#/print" data-view="print">Print</a>
+      <a href="#/scan" data-view="scan">Scan</a>
+      <a href="#/activity" data-view="activity">Activity</a>
+    </nav>
+    <div class="top-actions">
+      <button class="icon-btn" id="btn-connect" type="button" title="Connect an AI agent or a script">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/></svg>
+        <span>Connect</span>
+      </button>
+      <button class="icon-btn" id="btn-theme" type="button" title="Switch between light and dark">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+        <span class="sr-only">Theme</span>
+      </button>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <!-- Home -->
+    <section id="view-home" class="view" hidden>
+      <div class="view-head">
+        <h1>Devices</h1>
+        <p class="lede" id="home-lede">Your printer and scanner, ready for people, programs and AI agents.</p>
+      </div>
+      <div class="grid" id="device-grid"></div>
+      <div class="view-head sub">
+        <h2>Recent</h2>
+        <a class="link" href="#/activity">All activity</a>
+      </div>
+      <div class="list" id="recent-list"></div>
+    </section>
+
+    <!-- Print -->
+    <section id="view-print" class="view" hidden>
+      <div class="view-head">
+        <h1>Print</h1>
+        <p class="lede">PDF, pictures and text. Platen converts what the printer can't read by itself.</p>
+      </div>
+      <div class="two-col">
+        <div class="card pad">
+          <div class="seg" role="tablist" id="print-source">
+            <button type="button" role="tab" data-source="file" aria-selected="true">File</button>
+            <button type="button" role="tab" data-source="url">Web address</button>
+            <button type="button" role="tab" data-source="paperless" id="tab-paperless">Paperless</button>
+            <button type="button" role="tab" data-source="text">Text</button>
+          </div>
+
+          <div class="source" data-pane="file">
+            <label class="drop" id="drop">
+              <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.tif,.tiff,.bmp,.txt,.md,text/plain,application/pdf,image/*">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+              <strong id="drop-title">Drop a file here</strong>
+              <span id="drop-hint">or tap to choose. You can also paste a picture.</span>
+            </label>
+          </div>
+          <div class="source" data-pane="url" hidden>
+            <label class="field"><span>Address of a PDF or picture</span>
+              <input type="url" id="print-url" placeholder="https://example.com/document.pdf" inputmode="url" autocomplete="off">
+            </label>
+          </div>
+          <div class="source" data-pane="paperless" hidden>
+            <label class="field"><span>Find a document in Paperless</span>
+              <input type="search" id="pl-query" placeholder="invoice, contract, 2026…" autocomplete="off">
+            </label>
+            <div class="list compact" id="pl-results"></div>
+          </div>
+          <div class="source" data-pane="text" hidden>
+            <label class="field"><span>Text to print</span>
+              <textarea id="print-text" rows="8" placeholder="A note, a list, a label…"></textarea>
+            </label>
+          </div>
+        </div>
+
+        <div class="card pad">
+          <div class="options">
+            <label class="field" id="opt-printer-wrap"><span>Printer</span>
+              <select id="opt-printer"></select>
+            </label>
+            <div class="field"><span>Copies</span>
+              <div class="stepper">
+                <button type="button" id="copies-minus" aria-label="Fewer copies">−</button>
+                <output id="copies" aria-live="polite">1</output>
+                <button type="button" id="copies-plus" aria-label="More copies">+</button>
+              </div>
+            </div>
+            <div class="field" id="opt-duplex-wrap"><span>Sides</span>
+              <div class="seg" id="opt-duplex">
+                <button type="button" data-v="off" aria-pressed="true">One</button>
+                <button type="button" data-v="long-edge">Both</button>
+                <button type="button" data-v="short-edge" title="Flip on the short edge (for landscape pages)">Both, flip up</button>
+              </div>
+            </div>
+            <div class="field"><span>Colour</span>
+              <div class="seg" id="opt-color">
+                <button type="button" data-v="auto" aria-pressed="true">Auto</button>
+                <button type="button" data-v="color">Colour</button>
+                <button type="button" data-v="monochrome">Black</button>
+              </div>
+            </div>
+            <div class="field"><span>Quality</span>
+              <div class="seg" id="opt-quality">
+                <button type="button" data-v="draft">Draft</button>
+                <button type="button" data-v="normal" aria-pressed="true">Normal</button>
+                <button type="button" data-v="high">High</button>
+              </div>
+            </div>
+            <label class="field"><span>Paper</span>
+              <select id="opt-media"></select>
+            </label>
+            <label class="field"><span>Pages</span>
+              <input type="text" id="opt-pages" placeholder="all, or 1-3,5" autocomplete="off" inputmode="text">
+            </label>
+          </div>
+          <div class="summary" id="print-summary" aria-live="polite">Choose something to print.</div>
+          <button class="btn primary big" id="btn-print" type="button" disabled>Print</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scan -->
+    <section id="view-scan" class="view" hidden>
+      <div class="view-head">
+        <h1>Scan</h1>
+        <p class="lede">Put the page on the glass. Add pages one by one, then save, file or copy.</p>
+      </div>
+      <div class="two-col scan-layout">
+        <div class="card stage-card">
+          <div class="stage" id="stage">
+            <div class="stage-empty" id="stage-empty">
+              <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="8" y="16" width="48" height="32" rx="6"/><rect x="14" y="22" width="36" height="20" rx="2"/><path d="M14 32h36"/></svg>
+              <span>Nothing scanned yet</span>
+            </div>
+            <img id="stage-img" alt="Scanned page" hidden>
+            <div class="beam" id="beam" hidden></div>
+          </div>
+          <div class="strip" id="strip" aria-label="Pages"></div>
+        </div>
+
+        <div class="card pad">
+          <div class="options">
+            <label class="field" id="scan-scanner-wrap"><span>Scanner</span>
+              <select id="scan-scanner"></select>
+            </label>
+            <div class="field"><span>Colour</span>
+              <div class="seg" id="scan-color">
+                <button type="button" data-v="color" aria-pressed="true">Colour</button>
+                <button type="button" data-v="gray">Gray</button>
+              </div>
+            </div>
+            <div class="field"><span>Detail</span>
+              <div class="seg" id="scan-dpi">
+                <button type="button" data-v="150" title="150 dpi: fast, small files">Fast</button>
+                <button type="button" data-v="300" aria-pressed="true" title="300 dpi: documents">Document</button>
+                <button type="button" data-v="600" title="600 dpi: photos and small print">Fine</button>
+              </div>
+            </div>
+            <label class="field"><span>Area</span>
+              <select id="scan-paper">
+                <option value="a4">A4</option>
+                <option value="letter">Letter</option>
+                <option value="a5">A5</option>
+                <option value="4x6">Photo 10×15</option>
+                <option value="full">Whole glass</option>
+              </select>
+            </label>
+            <label class="field wide"><span>Title</span>
+              <input type="text" id="scan-title" placeholder="Electricity bill, September" autocomplete="off">
+            </label>
+          </div>
+
+          <div class="actions">
+            <button class="btn primary big" id="btn-scan" type="button">Scan</button>
+          </div>
+          <div class="actions after" id="scan-after" hidden>
+            <a class="btn" id="btn-download" href="#" download>Save PDF</a>
+            <button class="btn" id="btn-file" type="button">Send to Paperless</button>
+            <button class="btn" id="btn-copy" type="button">Print a copy</button>
+            <button class="btn ghost" id="btn-newscan" type="button">Start over</button>
+          </div>
+          <p class="note" id="scan-note" hidden></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Activity -->
+    <section id="view-activity" class="view" hidden>
+      <div class="view-head">
+        <h1>Activity</h1>
+        <p class="lede">What was printed and scanned, by people and by agents.</p>
+      </div>
+      <div class="two-col">
+        <div>
+          <h2 class="section-title">Print jobs</h2>
+          <div class="list" id="job-list"></div>
+        </div>
+        <div>
+          <h2 class="section-title">Scans</h2>
+          <div class="list" id="scan-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="Sections">
+    <a href="#/" data-view="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z"/></svg><span>Home</span></a>
+    <a href="#/print" data-view="print"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V4h10v5M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M7 14h10v6H7z"/></svg><span>Print</span></a>
+    <a href="#/scan" data-view="scan"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M4 12h16"/></svg><span>Scan</span></a>
+    <a href="#/activity" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v5l3 2M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9z"/></svg><span>Activity</span></a>
+  </nav>
+
+  <!-- Dialogs -->
+  <dialog id="dlg-confirm" class="dialog">
+    <form method="dialog">
+      <h2 id="confirm-title">Print this?</h2>
+      <p id="confirm-text"></p>
+      <div class="dialog-actions">
+        <button class="btn ghost" value="cancel">Cancel</button>
+        <button class="btn primary" value="ok" id="confirm-ok">Print</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-file" class="dialog">
+    <form method="dialog" id="file-form">
+      <h2>Send to Paperless</h2>
+      <label class="field"><span>Title</span><input type="text" id="file-title" autocomplete="off"></label>
+      <label class="field"><span>Tags</span>
+        <input type="text" id="file-tags" list="list-tags" placeholder="bills, house (comma separated)" autocomplete="off">
+      </label>
+      <div class="chips" id="tag-suggest"></div>
+      <label class="field"><span>From</span>
+        <input type="text" id="file-correspondent" list="list-correspondents" placeholder="Who sent it" autocomplete="off">
+      </label>
+      <label class="field"><span>Kind</span>
+        <input type="text" id="file-type" list="list-types" placeholder="Invoice, contract, letter…" autocomplete="off">
+      </label>
+      <label class="field"><span>Document date</span><input type="date" id="file-date"></label>
+      <datalist id="list-tags"></datalist>
+      <datalist id="list-correspondents"></datalist>
+      <datalist id="list-types"></datalist>
+      <div class="dialog-actions">
+        <button class="btn ghost" value="cancel">Cancel</button>
+        <button class="btn primary" value="ok">Send</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-connect" class="dialog wide">
+    <form method="dialog">
+      <h2>Connect</h2>
+      <p class="lede">Everything this page does is available to AI agents and scripts.</p>
+      <h3>AI agents (MCP)</h3>
+      <p>Platen is an MCP server. Point your client at this address:</p>
+      <pre class="code" id="mcp-url"></pre>
+      <p>With Claude Code:</p>
+      <pre class="code" id="mcp-claude"></pre>
+      <h3>Scripts (REST API)</h3>
+      <pre class="code" id="api-curl"></pre>
+      <p><a class="link" href="/api/openapi.json" target="_blank" rel="noopener">OpenAPI description</a></p>
+      <div class="dialog-actions">
+        <button class="btn primary" value="ok">Done</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-login" class="dialog">
+    <form method="dialog" id="login-form">
+      <h2>Access token</h2>
+      <p>This Platen is protected. Enter one of the tokens from its configuration.</p>
+      <label class="field"><span>Token</span><input type="password" id="login-token" autocomplete="current-password" required></label>
+      <p class="error" id="login-error" hidden></p>
+      <div class="dialog-actions">
+        <button class="btn primary" value="ok">Continue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>

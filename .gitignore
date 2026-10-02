@@ -1,0 +1,17 @@
+# Build output
+/platen
+/dist/
+*.test
+*.out
+
+# Local configuration and data (may hold tokens and scanned documents)
+/platen.yaml
+/data/
+*.local.yaml
+.env
+
+# Editors and tools
+.DS_Store
+.idea/
+.vscode/
+.playwright-mcp/

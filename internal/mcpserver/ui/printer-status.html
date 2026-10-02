@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Printer status</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, light-dark(#fffdf7, #1c1c20));
+    --bg2: var(--color-background-secondary, light-dark(#f4efe4, #26262b));
+    --ink: var(--color-text-primary, light-dark(#1b1a17, #f1ede4));
+    --muted: var(--color-text-secondary, light-dark(#6f6a5e, #a09a8d));
+    --line: var(--color-border-primary, light-dark(#e3dccb, #34343b));
+    --accent: light-dark(#0b7fc0, #45b4ef);
+    --ok: light-dark(#1b8a4b, #4cc47f);
+    --warn: light-dark(#b7791f, #e0a84a);
+    --bad: light-dark(#c23a2b, #f0796b);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif); }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .name { font-weight: 700; font-size: 1.05rem; }
+  .model { color: var(--muted); font-size: .88rem; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: .78rem; font-weight: 700; white-space: nowrap; color: var(--muted); background: color-mix(in srgb, var(--muted) 15%, transparent); }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 15%, transparent); }
+  .pill.busy { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .pill.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 15%, transparent); }
+  .tanks { display: flex; gap: 12px; align-items: flex-end; margin: 16px 0 10px; }
+  .tank { display: grid; justify-items: center; gap: 5px; flex: 1; max-width: 62px; }
+  .glass { width: 100%; height: 74px; border-radius: 10px 10px 12px 12px; position: relative; overflow: hidden; border: 1px solid var(--line); background: var(--bg2); }
+  .tank.low .glass { border-color: var(--warn); }
+  .liquid { position: absolute; left: 0; right: 0; bottom: 0; transition: height .7s cubic-bezier(.2,.8,.2,1); }
+  .pct { font: 700 .8rem ui-monospace, Menlo, monospace; }
+  .label { font-size: .68rem; color: var(--muted); font-weight: 650; text-align: center; line-height: 1.1; }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: .88rem; }
+  .meta b { color: var(--ink); }
+  .foot { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; gap: 10px; }
+  button { font: inherit; font-weight: 650; padding: 7px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg2); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .note { color: var(--muted); font-size: .85rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <div id="empty" class="note">Waiting for the printer…</div>
+  <div id="view" hidden>
+    <div class="head">
+      <div><div class="name" id="name"></div><div class="model" id="model"></div></div>
+      <span class="pill" id="pill"></span>
+    </div>
+    <div class="tanks" id="tanks"></div>
+    <div class="meta" id="meta"></div>
+    <div class="foot">
+      <span class="note" id="note"></span>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </div>
+<script>
+(() => {
+  // A minimal MCP Apps client: JSON-RPC 2.0 over postMessage, no library.
+  const pending = new Map();
+  let nextId = 1;
+  const post = (msg) => window.parent.postMessage({ jsonrpc: '2.0', ...msg }, '*');
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    post({ id, method, params });
+  });
+  const notify = (method, params) => post({ method, params });
+  const $ = (id) => document.getElementById(id);
+  let printer = null;
+
+  const labels = { idle: 'Ready', processing: 'Printing', stopped: 'Stopped' };
+  const classes = { idle: 'ok', processing: 'busy', stopped: 'bad' };
+  const fallback = (name) => /cyan/i.test(name) ? '#00a8e8' : /magenta/i.test(name) ? '#e6007e' : /yellow/i.test(name) ? '#f5c400' : '#1b1a17';
+
+  function render(p) {
+    if (!p || !p.id) return;
+    printer = p;
+    $('empty').hidden = true; $('view').hidden = false;
+    $('name').textContent = p.name;
+    $('model').textContent = p.online ? (p.make_and_model || 'Printer') : (p.error || 'Not reachable');
+    const pill = $('pill');
+    pill.className = 'pill ' + (p.online ? (classes[p.state] || '') : 'bad');
+    pill.textContent = p.online ? (labels[p.state] || p.state) : 'Offline';
+    const tanks = $('tanks');
+    tanks.replaceChildren();
+    for (const ink of p.ink || []) {
+      const tank = document.createElement('div');
+      tank.className = 'tank' + (ink.low ? ' low' : '');
+      const glass = document.createElement('div'); glass.className = 'glass';
+      const liquid = document.createElement('div'); liquid.className = 'liquid';
+      liquid.style.height = Math.max(0, ink.percent) + '%';
+      liquid.style.background = ink.color || fallback(ink.name);
+      glass.append(liquid);
+      const pct = document.createElement('span'); pct.className = 'pct'; pct.textContent = ink.percent >= 0 ? ink.percent + '%' : '?';
+      const label = document.createElement('span'); label.className = 'label'; label.textContent = ink.name.replace(/\(.*\)/, '').trim();
+      tank.append(glass, pct, label);
+      tanks.append(tank);
+    }
+    tanks.hidden = !(p.ink || []).length;
+    const meta = $('meta');
+    meta.replaceChildren();
+    const add = (label, value) => { const s = document.createElement('span'); const b = document.createElement('b'); b.textContent = value; s.append(label + ' ', b); meta.append(s); };
+    if (p.paper_loaded && p.paper_loaded.length) add('Paper', p.paper_loaded[0]);
+    add('Queue', String(p.queued_jobs || 0));
+    if (p.can_duplex) add('', 'Two-sided');
+    if (p.state_reasons && p.state_reasons.length) add('', p.state_reasons.join(', ').replaceAll('-', ' '));
+    $('note').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function theme(ctx) {
+    if (!ctx) return;
+    if (ctx.theme) document.documentElement.style.colorScheme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+  }
+
+  window.addEventListener('message', (ev) => {
+    const m = ev.data;
+    if (!m || m.jsonrpc !== '2.0') return;
+    if (m.id !== undefined && !m.method) {
+      const p = pending.get(m.id);
+      if (!p) return;
+      pending.delete(m.id);
+      m.error ? p.reject(new Error(m.error.message || 'request failed')) : p.resolve(m.result);
+      return;
+    }
+    switch (m.method) {
+      case 'ui/notifications/tool-result': render(m.params && m.params.structuredContent); break;
+      case 'ui/notifications/host-context-changed': theme(m.params); break;
+      case 'ui/resource-teardown': if (m.id !== undefined) post({ id: m.id, result: {} }); break;
+      case 'ping': if (m.id !== undefined) post({ id: m.id, result: {} }); break;
+    }
+  });
+
+  $('refresh').addEventListener('click', async () => {
+    $('note').textContent = 'Refreshing…';
+    try {
+      const res = await request('tools/call', { name: 'printer_status', arguments: printer ? { printer: printer.id } : {} });
+      render(res && res.structuredContent);
+    } catch (err) {
+      $('note').textContent = err.message;
+    }
+  });
+
+  request('ui/initialize', { appInfo: { name: 'Platen printer status', version: '1.0.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' })
+    .then((res) => { theme(res && res.hostContext); notify('ui/notifications/initialized', {}); })
+    .catch(() => notify('ui/notifications/initialized', {}));
+
+  new ResizeObserver(() => notify('ui/notifications/size-changed', {
+    width: Math.ceil(document.documentElement.scrollWidth), height: Math.ceil(document.documentElement.scrollHeight),
+  })).observe(document.body);
+})();
+</script>
+</body>
+</html>

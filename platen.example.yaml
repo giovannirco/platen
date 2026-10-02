@@ -1,0 +1,66 @@
+# Platen configuration. Copy to platen.yaml and adjust.
+# Run "platen check" to see whether Platen can talk to everything listed here.
+
+server:
+  # Address to listen on.
+  listen: ":8080"
+  # How people and agents reach Platen. Used for links, and accepted as a host name.
+  base_url: "http://platen.lan:8080"
+  # Scans and the print history are kept here.
+  data_dir: "./data"
+  # Extra host names Platen may be reached under (only checked when auth.tokens is empty).
+  # allowed_hosts: ["print.example.net"]
+
+auth:
+  # Bearer tokens for the API, the web interface and the MCP endpoint.
+  # Leave empty only on a network you trust: without a token, anyone who can
+  # reach Platen can print and scan. Generate one with: openssl rand -hex 24
+  tokens: []
+
+printers:
+  # A printer that speaks IPP (anything with AirPrint, Mopria or IPP Everywhere)...
+  - id: inkjet
+    name: "Living-room inkjet"
+    uri: "ipp://192.0.2.20/ipp/print"
+    default: true
+  # ...or a CUPS queue.
+  # - id: laser
+  #   name: "Office laser (CUPS)"
+  #   uri: "ipp://cups.lan:631/printers/laser"
+
+scanners:
+  # An eSCL scanner (AirScan / Mopria Scan). Multifunction printers usually
+  # serve it on the same address as printing.
+  - id: flatbed
+    name: "Living-room scanner"
+    url: "http://192.0.2.20/eSCL"
+
+# Optional: file scans in Paperless-ngx and print documents from it.
+paperless:
+  url: "http://paperless.lan:8000"
+  # Address used for links, when people reach Paperless under another name.
+  # public_url: "https://paperless.example.net"
+  # The API token of a Paperless user. Prefer the PLATEN_PAPERLESS_TOKEN
+  # environment variable or token_file over writing it here.
+  token: ""
+  # token_file: "/run/secrets/paperless-token"
+
+limits:
+  # Ask for confirmation when a job needs more sheets of paper than this.
+  # 0 asks for every job, -1 never asks.
+  confirm_above_sheets: 5
+  # Refuse jobs above this many sheets (0 = no limit).
+  max_sheets: 100
+  max_copies: 10
+  max_upload_mb: 100
+  # Delete stored scans after this many days (0 = keep).
+  scan_retention_days: 30
+
+fetch:
+  # Let callers print a document by URL.
+  allow_urls: true
+  # Also allow URLs that point into private networks. Off by default: with it on,
+  # anyone who can call Platen can make it read from your internal network.
+  allow_private_networks: false
+  # Directories from which callers may print files by path (empty = off).
+  allowed_dirs: []

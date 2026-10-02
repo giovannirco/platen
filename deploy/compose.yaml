@@ -1,0 +1,18 @@
+# Platen with Docker Compose. Copy platen.example.yaml to platen.yaml first.
+services:
+  platen:
+    image: ghcr.io/giovannirco/platen:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./platen.yaml:/etc/platen/platen.yaml:ro
+      - platen-data:/data
+    environment:
+      PLATEN_CONFIG: /etc/platen/platen.yaml
+      # Secrets come from the environment, so the config file can live in git.
+      PLATEN_AUTH_TOKENS: ${PLATEN_AUTH_TOKENS:-}
+      PLATEN_PAPERLESS_TOKEN: ${PLATEN_PAPERLESS_TOKEN:-}
+
+volumes:
+  platen-data:

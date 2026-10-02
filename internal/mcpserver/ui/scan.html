@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Scan</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, light-dark(#fffdf7, #1c1c20));
+    --bg2: var(--color-background-secondary, light-dark(#f4efe4, #26262b));
+    --ink: var(--color-text-primary, light-dark(#1b1a17, #f1ede4));
+    --muted: var(--color-text-secondary, light-dark(#6f6a5e, #a09a8d));
+    --line: var(--color-border-primary, light-dark(#e3dccb, #34343b));
+    --accent: light-dark(#0b7fc0, #45b4ef);
+    --on-accent: light-dark(#ffffff, #06202e);
+    --ok: light-dark(#1b8a4b, #4cc47f);
+    --bad: light-dark(#c23a2b, #f0796b);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif); }
+  .wrap { display: grid; grid-template-columns: minmax(110px, 170px) 1fr; gap: 16px; align-items: start; }
+  .page { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #fff; aspect-ratio: 210 / 297; }
+  .page img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .count { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.66); color: #fff; font: 700 .72rem ui-monospace, Menlo, monospace; padding: 2px 7px; border-radius: 6px; }
+  .beam { position: absolute; left: 0; right: 0; height: 20%; top: -20%; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 60%, #fff) 50%, transparent); animation: sweep 2.2s ease-in-out infinite; }
+  @keyframes sweep { 50% { top: 100%; } }
+  .title { font-weight: 700; font-size: 1.05rem; }
+  .meta { color: var(--muted); font-size: .88rem; margin: 2px 0 12px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  button, a.btn { font: inherit; font-weight: 650; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg2); color: var(--ink); cursor: pointer; text-decoration: none; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .note { color: var(--muted); font-size: .86rem; margin-top: 10px; }
+  .note.ok { color: var(--ok); } .note.bad { color: var(--bad); }
+  [hidden] { display: none !important; }
+  @media (max-width: 380px) { .wrap { grid-template-columns: 1fr; } .page { max-width: 180px; } }
+  @media (prefers-reduced-motion: reduce) { .beam { display: none; } }
+</style>
+</head>
+<body>
+  <div id="empty" class="note">Scanning…</div>
+  <div class="wrap" id="view" hidden>
+    <div class="page">
+      <img id="preview" alt="Last scanned page">
+      <span class="count" id="count"></span>
+      <div class="beam" id="beam" hidden></div>
+    </div>
+    <div>
+      <div class="title" id="title"></div>
+      <div class="meta" id="meta"></div>
+      <div class="actions">
+        <button class="primary" id="next" type="button">Scan next page</button>
+        <button id="file" type="button">File in Paperless</button>
+        <button id="save" type="button">Open PDF</button>
+      </div>
+      <div class="note" id="note"></div>
+    </div>
+  </div>
+<script>
+(() => {
+  // A minimal MCP Apps client: JSON-RPC 2.0 over postMessage, no library.
+  const pending = new Map();
+  let nextId = 1;
+  const post = (msg) => window.parent.postMessage({ jsonrpc: '2.0', ...msg }, '*');
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    post({ id, method, params });
+  });
+  const notify = (method, params) => post({ method, params });
+  const $ = (id) => document.getElementById(id);
+  let scan = null;
+
+  function note(text, kind) { const n = $('note'); n.textContent = text || ''; n.className = 'note' + (kind ? ' ' + kind : ''); }
+
+  function render(s) {
+    if (!s || !s.scan_id) return;
+    scan = s;
+    $('empty').hidden = true; $('view').hidden = false;
+    if (s.preview) $('preview').src = s.preview;
+    $('count').textContent = s.page_count + (s.page_count === 1 ? ' page' : ' pages');
+    $('title').textContent = s.title || 'Untitled scan';
+    $('meta').textContent = [s.color === 'gray' ? 'Gray' : 'Colour', s.dpi + ' dpi', s.scan_id].join(' · ');
+    const filed = s.paperless;
+    $('file').hidden = !!(filed && filed.status === 'success');
+    if (filed && filed.status === 'success') note('Filed in Paperless as document ' + filed.document_id + '.', 'ok');
+    else if (filed && filed.status === 'failure') note('Paperless refused it: ' + (filed.message || ''), 'bad');
+  }
+
+  function theme(ctx) {
+    if (!ctx) return;
+    if (ctx.theme) document.documentElement.style.colorScheme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+  }
+
+  window.addEventListener('message', (ev) => {
+    const m = ev.data;
+    if (!m || m.jsonrpc !== '2.0') return;
+    if (m.id !== undefined && !m.method) {
+      const p = pending.get(m.id);
+      if (!p) return;
+      pending.delete(m.id);
+      m.error ? p.reject(new Error(m.error.message || 'request failed')) : p.resolve(m.result);
+      return;
+    }
+    switch (m.method) {
+      case 'ui/notifications/tool-result': render(m.params && m.params.structuredContent); break;
+      case 'ui/notifications/host-context-changed': theme(m.params); break;
+      case 'ui/resource-teardown': if (m.id !== undefined) post({ id: m.id, result: {} }); break;
+      case 'ping': if (m.id !== undefined) post({ id: m.id, result: {} }); break;
+    }
+  });
+
+  $('next').addEventListener('click', async () => {
+    if (!scan) return;
+    $('next').disabled = true; $('beam').hidden = false; note('Scanning the next page…');
+    try {
+      const res = await request('tools/call', { name: 'scan_document', arguments: { scan_id: scan.scan_id } });
+      if (res && res.isError) throw new Error(res.content && res.content[0] && res.content[0].text || 'the scan failed');
+      render(res && res.structuredContent);
+      note('Page ' + scan.page_count + ' added.', 'ok');
+    } catch (err) {
+      note(err.message, 'bad');
+    } finally {
+      $('next').disabled = false; $('beam').hidden = true;
+    }
+  });
+
+  // Filing needs a title and tags, which the assistant is good at proposing:
+  // hand the task back to the conversation instead of guessing here.
+  $('file').addEventListener('click', async () => {
+    if (!scan) return;
+    try {
+      await request('ui/message', { role: 'user', content: { type: 'text',
+        text: 'Please file scan ' + scan.scan_id + ' in Paperless: read the pages, propose a title, tags, correspondent and date, and file it when I agree.' } });
+      note('Asked the assistant to file it.');
+    } catch (err) {
+      note(err.message, 'bad');
+    }
+  });
+
+  $('save').addEventListener('click', async () => {
+    if (!scan) return;
+    try { await request('ui/open-link', { url: scan.document_url }); }
+    catch (err) { note(scan.document_url); }
+  });
+
+  request('ui/initialize', { appInfo: { name: 'Platen scan', version: '1.0.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' })
+    .then((res) => { theme(res && res.hostContext); notify('ui/notifications/initialized', {}); })
+    .catch(() => notify('ui/notifications/initialized', {}));
+
+  new ResizeObserver(() => notify('ui/notifications/size-changed', {
+    width: Math.ceil(document.documentElement.scrollWidth), height: Math.ceil(document.documentElement.scrollHeight),
+  })).observe(document.body);
+})();
+</script>
+</body>
+</html>

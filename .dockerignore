@@ -1,0 +1,7 @@
+.git
+.github
+data
+dist
+docs
+platen.yaml
+*.local.yaml
