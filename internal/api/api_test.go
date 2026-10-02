@@ -390,6 +390,44 @@ func TestBrowserAttacksAreRefused(t *testing.T) {
 	}
 }
 
+func TestBrowserClientsOnOtherOriginsNeedAToken(t *testing.T) {
+	f := newFixture(t, true)
+	good := f.token
+	f.token = ""
+	cross := []string{"Origin", "https://host.example", "Sec-Fetch-Site", "cross-site"}
+	// Without a token a cross-origin write is refused, with or without a cookie.
+	if status, _ := f.do(t, "POST", "/api/v1/print", map[string]any{"source": map[string]any{"text": "x"}}, cross...); status != 403 {
+		t.Errorf("cross-origin without token: %d", status)
+	}
+	// A preflight is answered so that the browser can send the real request.
+	req, _ := http.NewRequest("OPTIONS", f.srv.URL+"/mcp", nil)
+	req.Header.Set("Origin", "https://host.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 204 || resp.Header.Get("Access-Control-Allow-Origin") != "https://host.example" ||
+		!strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Authorization") {
+		t.Fatalf("preflight: %v %+v", err, resp.Header)
+	}
+	// With a bearer token the request goes through and gets its CORS headers.
+	f.token = good
+	req, _ = http.NewRequest("GET", f.srv.URL+"/api/v1/info", nil)
+	req.Header.Set("Origin", "https://host.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("Authorization", "Bearer "+good)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 || resp.Header.Get("Access-Control-Allow-Origin") != "https://host.example" {
+		t.Errorf("cross-origin with token: %v %d %q", err, resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if status, _ := f.do(t, "POST", "/api/v1/print", map[string]any{"source": map[string]any{"text": "x"}, "dry_run": true}, cross...); status != 200 {
+		t.Errorf("cross-origin write with token: %d", status)
+	}
+	// A same-origin page gets no CORS headers and keeps working.
+	if status, _ := f.do(t, "GET", "/api/v1/info", nil, "Sec-Fetch-Site", "same-origin"); status != 200 {
+		t.Errorf("same-origin: %d", status)
+	}
+}
+
 func TestEvents(t *testing.T) {
 	f := newFixture(t, false)
 	resp, err := http.Get(f.srv.URL + "/api/v1/events")

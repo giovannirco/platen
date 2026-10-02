@@ -227,6 +227,8 @@ More in [docs/how-it-works.md](docs/how-it-works.md).
 | CUPS 2.4 queue | PDF passthrough |
 | Paperless-ngx 3.2 | Filing, search, printing a stored document |
 | Go MCP SDK 1.8 clients | stdio and stateless HTTP, protocol 2026-07-28 |
+| MCP Inspector (TypeScript SDK) | every tool, prompt and resource over HTTP |
+| MCP Apps reference host (ext-apps 2.0) | both views, with calls from the view back to Platen |
 
 Platen should work with any printer that supports IPP with PDF, JPEG or PWG Raster, and any eSCL scanner. If yours behaves differently, please open an issue with the output of `platen check`.
 

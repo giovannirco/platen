@@ -243,6 +243,14 @@ func (s *server) addScanTools(srv *mcp.Server) {
 		return &mcp.CallToolResult{Content: text("%s", msg)}, out, nil
 	})
 
+	fileSchema, err := jsonschema.For[fileIn](nil)
+	if err != nil {
+		panic(err)
+	}
+	// A Go slice becomes a nullable array; some clients (Gemini function
+	// declarations) only take a single type, and an absent list is fine here.
+	fileSchema.Properties["tags"].Types, fileSchema.Properties["tags"].Type = nil, "array"
+
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "file_scan_in_paperless",
 		Title: "File a scan in Paperless-ngx",
@@ -250,6 +258,7 @@ func (s *server) addScanTools(srv *mcp.Server) {
 			"Read the scanned page first and propose these to the person; file once they agree. " +
 			"Paperless adds searchable text itself. Returns the address of the new document.",
 		Annotations: additive("File a scan in Paperless-ngx"),
+		InputSchema: fileSchema,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in fileIn) (*mcp.CallToolResult, *scanOut, error) {
 		sc, err := s.hub.FileScan(ctx, in.ScanID, hub.FileRequest{
 			Title: in.Title, Tags: in.Tags, Correspondent: in.Correspondent, DocumentType: in.DocumentType, Created: in.Created, Wait: true,

@@ -25,6 +25,8 @@ The protocol changed a lot in the 2026-07-28 revision, and Platen is written for
 
 Clients on older revisions still work. Over stdio the SDK bridges input requests to classic elicitation. Over stateless HTTP an older client can't be asked anything, so Platen tells the model to ask the person and to repeat the call with `confirm: true`.
 
+**Browser-based hosts.** A host that runs in a browser (the MCP Inspector in direct mode, an MCP Apps host, a web agent) connects from another origin. Platen answers the CORS preflight and accepts such requests when they carry a bearer token in the `Authorization` header; without one, cross-origin requests are refused, because that is how a malicious page would use a logged-in browser.
+
 ## Tools
 
 | Tool | Changes something? | Notes |
@@ -50,6 +52,12 @@ Clients on older revisions still work. Over stdio the SDK bridges input requests
 - `platen://scans/{scan_id}/document`: the PDF of a scan.
 - `platen://scans/{scan_id}/pages/{page}`: one page as JPEG.
 - `platen://printers/{printer_id}`: printer state as JSON.
+
+## What has been checked
+
+- The confirmation and "next page" flows over stdio and stateless HTTP, with the Go SDK, in the test suite.
+- Every tool, prompt and resource template with the MCP Inspector CLI (TypeScript SDK) against the real printer, scanner and Paperless.
+- The two views in the reference MCP Apps host (`examples/basic-host` in the ext-apps repository): rendering of tool results, `tools/call` from the view (Refresh, Scan next page), `ui/message` and `ui/open-link`.
 
 ## Trying it by hand
 

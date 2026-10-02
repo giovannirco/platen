@@ -95,10 +95,50 @@ func (s *Server) Handler() http.Handler {
 
 	// Order matters: reject foreign hosts and cross-site writes before anything else.
 	var h http.Handler = mux
-	h = http.NewCrossOriginProtection().Handler(h)
+	h = s.crossOrigin(h)
 	h = s.guard(h)
 	h = securityHeaders(h)
 	return s.logRequests(h)
+}
+
+// crossOrigin decides about requests that a browser makes from another site.
+//
+// Requests that rely on the session cookie are refused when they come from
+// another origin: that is how a web page would make a browser print on its
+// behalf. A request that carries a bearer token in its header is different: no
+// other site can know the token, so browser-based agents and MCP hosts on
+// other origins may use the API and the MCP endpoint with it, and get the CORS
+// answers they need.
+func (s *Server) crossOrigin(next http.Handler) http.Handler {
+	protected := http.NewCrossOriginProtection().Handler(next)
+	const allowHeaders = "Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name, Last-Event-ID, X-Platen-Client"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		api := strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/mcp"
+		if origin == "" || !api {
+			protected.ServeHTTP(w, r)
+			return
+		}
+		h := w.Header()
+		h.Add("Vary", "Origin")
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			// A preflight carries no token; it only lets the browser send the real
+			// request, which is checked like any other.
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
+			h.Set("Access-Control-Allow-Headers", allowHeaders)
+			h.Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if s.bearer(r) {
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Mcp-Protocol-Version, Content-Disposition")
+			next.ServeHTTP(w, r)
+			return
+		}
+		protected.ServeHTTP(w, r)
+	})
 }
 
 // ---- middleware --------------------------------------------------------------
@@ -288,13 +328,22 @@ func (s *Server) validToken(token string) bool {
 	return ok
 }
 
+// bearer reports whether the request carries a valid token in its Authorization header.
+func (s *Server) bearer(r *http.Request) bool {
+	if len(s.cfg.Auth.Tokens) == 0 {
+		return false
+	}
+	h := r.Header.Get("Authorization")
+	return len(h) > 7 && strings.EqualFold(h[:7], "bearer ") && s.validToken(strings.TrimSpace(h[7:]))
+}
+
 // hasToken reports whether the request carries a valid bearer token or session cookie.
 func (s *Server) hasToken(r *http.Request) bool {
 	if len(s.cfg.Auth.Tokens) == 0 {
 		return false
 	}
-	if h := r.Header.Get("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
-		return s.validToken(strings.TrimSpace(h[7:]))
+	if r.Header.Get("Authorization") != "" {
+		return s.bearer(r)
 	}
 	if c, err := r.Cookie(cookieName); err == nil {
 		return s.validToken(c.Value)

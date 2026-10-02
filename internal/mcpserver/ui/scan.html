@@ -139,8 +139,8 @@
   $('file').addEventListener('click', async () => {
     if (!scan) return;
     try {
-      await request('ui/message', { role: 'user', content: { type: 'text',
-        text: 'Please file scan ' + scan.scan_id + ' in Paperless: read the pages, propose a title, tags, correspondent and date, and file it when I agree.' } });
+      await request('ui/message', { role: 'user', content: [{ type: 'text',
+        text: 'Please file scan ' + scan.scan_id + ' in Paperless: read the pages, propose a title, tags, correspondent and date, and file it when I agree.' }] });
       note('Asked the assistant to file it.');
     } catch (err) {
       note(err.message, 'bad');
