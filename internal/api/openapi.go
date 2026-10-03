@@ -73,12 +73,12 @@ func (s *Server) openAPI(w http.ResponseWriter, _ *http.Request) {
 			"/api/v1/printers/{id}/queue/{job}": m{"delete": m{"summary": "Cancel a job by the printer's job number", "parameters": []m{id("id", "Printer id"), id("job", "Printer job number")}, "responses": with(m{"200": ok("Cancelled.", nil)})}},
 			"/api/v1/print": m{"post": m{
 				"summary":     "Print a document",
-				"description": "Send a file as multipart/form-data, or JSON naming a URL, a Paperless document, a scan, a path or text. Answers 409 with code `confirmation_required` when the job needs more sheets than the configured threshold; repeat with `confirm: true`.",
+				"description": "Send a file as multipart/form-data, or JSON naming a URL, a Paperless document, a scan, a path or text. Answers 409 with code `confirmation_required` when the job needs more sheets than the configured threshold; repeat with `confirm: true`. If the printer rejects the job as busy, answers 409 with code `busy`; wait for the printer before retrying.",
 				"requestBody": m{"required": true, "content": m{
 					"multipart/form-data": m{"schema": object(formPrint)},
 					"application/json":    m{"schema": object(jsonPrint)},
 				}},
-				"responses": with(m{"200": ok("The job was sent (or, for a dry run, checked).", ref("PrintResult")), "409": ok("Confirmation required.", ref("Error")), "422": ok("The printer can't print this.", ref("Error"))}),
+				"responses": with(m{"200": ok("The job was sent (or, for a dry run, checked).", ref("PrintResult")), "409": ok("Confirmation required or the printer is busy.", ref("Error")), "422": ok("The printer can't print this.", ref("Error"))}),
 			}},
 			"/api/v1/jobs":      m{"get": m{"summary": "Print history", "responses": with(m{"200": ok("Jobs, newest first.", nil)})}},
 			"/api/v1/jobs/{id}": m{"delete": m{"summary": "Cancel a job from the history", "parameters": []m{id("id", "Job id")}, "responses": with(m{"200": ok("The job.", nil)})}},
@@ -107,7 +107,7 @@ func (s *Server) openAPI(w http.ResponseWriter, _ *http.Request) {
 			"/api/v1/scans/{id}/paperless": m{"post": m{"summary": "File a scan in Paperless-ngx", "parameters": []m{id("id", "Scan id")},
 				"requestBody": jsonBody(ref("FileRequest")), "responses": with(m{"200": ok("The scan, with its filing state.", ref("Scan"))})}},
 			"/api/v1/scans/{id}/print": m{"post": m{"summary": "Print a scan (a photocopy)", "parameters": []m{id("id", "Scan id")},
-				"requestBody": jsonBody(object(printOptions)), "responses": with(m{"200": ok("The job.", ref("PrintResult")), "409": ok("Confirmation required.", ref("Error"))})}},
+				"requestBody": jsonBody(object(printOptions)), "responses": with(m{"200": ok("The job.", ref("PrintResult")), "409": ok("Confirmation required or the printer is busy.", ref("Error"))})}},
 			"/api/v1/paperless": m{"get": m{"summary": "Tags, correspondents and document types of the Paperless instance", "responses": with(m{"200": ok("Lists.", nil)})}},
 			"/api/v1/paperless/documents": m{"get": m{"summary": "Search Paperless", "parameters": []m{{"name": "query", "in": "query", "schema": str}, {"name": "limit", "in": "query", "schema": integer}},
 				"responses": with(m{"200": ok("Documents.", nil)})}},
