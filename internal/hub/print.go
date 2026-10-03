@@ -3,6 +3,9 @@ package hub
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -61,6 +64,9 @@ type PrintRequest struct {
 	// Dump, when set, receives the exact bytes that would be sent to the printer
 	// and nothing is printed. It is used by "platen print -dump" and by tests.
 	Dump io.Writer `json:"-"`
+	// ExpectedFingerprint binds an internal confirmation retry to the document
+	// and print plan previously shown to the person. It is not a wire parameter.
+	ExpectedFingerprint string `json:"-"`
 }
 
 // PrintResult reports what was (or would be) printed.
@@ -95,6 +101,9 @@ type ConfirmationRequired struct {
 	Copies  int    `json:"copies"`
 	Sheets  int    `json:"sheets"`
 	Limit   int    `json:"confirm_above_sheets"`
+	// Fingerprint identifies the loaded document and effective print settings.
+	// The MCP layer signs it; it is never exposed in REST error details.
+	Fingerprint string `json:"-"`
 }
 
 func (e *ConfirmationRequired) Error() string {
@@ -176,6 +185,29 @@ func (pl *plan) close() {
 	}
 }
 
+// fingerprint covers both the document bytes and the resolved settings that
+// control output. Count-only summaries cannot identify what a person approved.
+func (pl *plan) fingerprint() string {
+	settings, _ := json.Marshal(struct {
+		Printer, URI, Title, Kind, Strategy, Format, RasterBack string
+		Pages                                                   []int
+		Copies, Native, Scale                                   int
+		Media                                                   ipp.Media
+		Duplex, Color, Quality                                  string
+		Target                                                  render.Target
+	}{
+		Printer: pl.dev.cfg.ID, URI: pl.dev.cfg.URI, Title: pl.title, Kind: pl.doc.kind,
+		Strategy: pl.strategy, Format: pl.format, RasterBack: pl.attrs.RasterBack,
+		Pages: pl.pages, Copies: pl.copies, Native: pl.native, Scale: pl.scale,
+		Media: pl.media, Duplex: pl.duplex, Color: pl.color, Quality: pl.quality, Target: pl.target,
+	})
+	documentHash := sha256.Sum256(pl.doc.data)
+	digest := sha256.New()
+	digest.Write(documentHash[:])
+	digest.Write(settings)
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
 // Print checks, prepares and submits a print job.
 func (h *Hub) Print(ctx context.Context, req PrintRequest) (*PrintResult, error) {
 	dev, err := h.printer(req.Printer)
@@ -195,6 +227,11 @@ func (h *Hub) Print(ctx context.Context, req PrintRequest) (*PrintResult, error)
 		return nil, err
 	}
 	defer pl.close()
+	// Check the same loaded bytes that submission will use, rather than doing
+	// a separate dry run which would fetch mutable sources again.
+	if req.ExpectedFingerprint != "" && req.ExpectedFingerprint != pl.fingerprint() {
+		return nil, invalid("the print job changed since confirmation; start again and ask for confirmation")
+	}
 
 	res := &PrintResult{
 		Printer: dev.cfg.ID, Title: pl.title, DocumentPages: pl.total, Pages: len(pl.pages),
@@ -220,7 +257,7 @@ func (h *Hub) Print(ctx context.Context, req PrintRequest) (*PrintResult, error)
 		return res, nil
 	}
 	if lim.ConfirmAboveSheets >= 0 && pl.sheets > lim.ConfirmAboveSheets && !req.Confirm {
-		return nil, &ConfirmationRequired{Printer: dev.cfg.Name, Title: pl.title, Pages: len(pl.pages), Copies: pl.copies, Sheets: pl.sheets, Limit: lim.ConfirmAboveSheets}
+		return nil, &ConfirmationRequired{Printer: dev.cfg.Name, Title: pl.title, Pages: len(pl.pages), Copies: pl.copies, Sheets: pl.sheets, Limit: lim.ConfirmAboveSheets, Fingerprint: pl.fingerprint()}
 	}
 	if !attrs.AcceptingJobs {
 		return nil, fmt.Errorf("%s is not accepting jobs (%s)", dev.cfg.Name, orDefault(strings.Join(attrs.StateReasons, ", "), attrs.State))

@@ -235,8 +235,3 @@ func (s *server) verify(token, kind string) (string, error) {
 	}
 	return st.Subject, nil
 }
-
-func fingerprint(parts ...any) string {
-	sum := sha256.Sum256([]byte(fmt.Sprint(parts...)))
-	return base64.RawURLEncoding.EncodeToString(sum[:12])
-}

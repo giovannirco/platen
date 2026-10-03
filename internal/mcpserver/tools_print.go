@@ -260,16 +260,9 @@ func (s *server) printDocument(ctx context.Context, req *mcp.CallToolRequest, in
 		if reply.Action != "accept" || reply.Content["confirm"] != true {
 			return &mcp.CallToolResult{Content: text("The person declined. Nothing was printed.")}, &hub.PrintResult{State: "declined", Message: "The person declined. Nothing was printed."}, nil
 		}
-		// The confirmation counts only for the job it was given for.
-		check := pr
-		check.DryRun = true
-		dry, err := s.hub.Print(ctx, check)
-		if err != nil {
-			return nil, nil, err
-		}
-		if subject != fingerprint(dry.Printer, dry.Title, dry.Pages, dry.Copies, dry.Sheets) {
-			return nil, nil, errState
-		}
+		// The hub checks the loaded bytes and effective settings immediately
+		// before using that same document for submission.
+		pr.ExpectedFingerprint = subject
 		pr.Confirm = true
 	}
 
@@ -278,12 +271,6 @@ func (s *server) printDocument(ctx context.Context, req *mcp.CallToolRequest, in
 	if errors.As(err, &need) {
 		if !canAsk {
 			return nil, nil, fmt.Errorf("%s. Ask the person whether to go ahead; if they agree, call print_document again with confirm set to true", need.Error())
-		}
-		dry := pr
-		dry.DryRun = true
-		check, derr := s.hub.Print(ctx, dry)
-		if derr != nil {
-			return nil, nil, derr
 		}
 		return &mcp.CallToolResult{
 			InputRequests: mcp.InputRequestMap{key: &mcp.ElicitParams{
@@ -297,7 +284,7 @@ func (s *server) printDocument(ctx context.Context, req *mcp.CallToolRequest, in
 					Required: []string{"confirm"},
 				},
 			}},
-			RequestState: s.sign(key, fingerprint(check.Printer, check.Title, check.Pages, check.Copies, check.Sheets)),
+			RequestState: s.sign(key, need.Fingerprint),
 		}, nil, nil
 	}
 	if err != nil {
