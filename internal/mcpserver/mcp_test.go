@@ -27,7 +27,7 @@ type fixture struct {
 	paperless *testutil.Paperless
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, tweaks ...func(*config.Config)) *fixture {
 	t.Helper()
 	f := &fixture{printer: testutil.NewRasterPrinter(t), scanner: testutil.NewScanner(t), paperless: testutil.NewPaperless(t)}
 	cfg := config.Default()
@@ -37,6 +37,9 @@ func newFixture(t *testing.T) *fixture {
 	cfg.Printers = []config.Printer{{ID: "inkjet", Name: "Inkjet", URI: f.printer.URI()}}
 	cfg.Scanners = []config.Scanner{{ID: "flatbed", Name: "Flatbed", URL: f.scanner.BaseURL()}}
 	cfg.Paperless = config.Paperless{URL: f.paperless.URL, Token: testutil.PaperlessToken}
+	for _, tweak := range tweaks {
+		tweak(cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
