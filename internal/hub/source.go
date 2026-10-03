@@ -77,6 +77,9 @@ func (h *Hub) load(ctx context.Context, src Source) (*document, error) {
 	)
 	switch {
 	case src.Text != "":
+		if int64(len(src.Text)) > limit {
+			return nil, fmt.Errorf("%w: the document is larger than %d MB", ErrLimitExceeded, h.cfg.Limits.MaxUploadMB)
+		}
 		return &document{name: orDefault(src.Name, "text"), kind: "text", mime: "text/plain", data: []byte(src.Text), from: "text"}, nil
 	case src.Base64 != "":
 		data, err = base64.StdEncoding.DecodeString(strings.TrimSpace(src.Base64))
