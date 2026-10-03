@@ -30,6 +30,7 @@ var (
 	ErrNoScanner     = errors.New("no scanner is configured")
 	ErrNoPaperless   = errors.New("Paperless-ngx is not configured")
 	ErrScannerBusy   = errors.New("the scanner is busy with another scan")
+	ErrPrinterBusy   = errors.New("the printer is busy")
 	ErrInvalid       = errors.New("invalid request")
 	ErrNotAllowed    = errors.New("not allowed")
 	ErrUnsupported   = errors.New("unsupported")

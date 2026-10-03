@@ -111,6 +111,42 @@ func errorCode(out map[string]any) string {
 	return code
 }
 
+func TestEmptyCollections(t *testing.T) {
+	f := newFixture(t, false)
+	for _, tc := range []struct{ path, key string }{
+		{"/api/v1/scans", "scans"},
+		{"/api/v1/paperless", "document_types"},
+	} {
+		status, out := f.do(t, "GET", tc.path, nil)
+		list, ok := out[tc.key].([]any)
+		if status != 200 || !ok || len(list) != 0 {
+			t.Errorf("%s must return an empty array: %d %v", tc.path, status, out)
+		}
+	}
+}
+
+func TestPrinterRejectsBusyJob(t *testing.T) {
+	f := newFixture(t, false)
+	f.printer.Busy = true
+	status, out := f.do(t, "POST", "/api/v1/print", map[string]any{
+		"source": map[string]string{"text": "Busy printer regression"}, "quality": "draft",
+	})
+	if status != http.StatusConflict || errorCode(out) != "busy" {
+		t.Fatalf("busy print: %d %v", status, out)
+	}
+	message := out["error"].(map[string]any)["message"].(string)
+	if !strings.Contains(message, "did not accept this job") {
+		t.Errorf("unclear busy feedback: %s", message)
+	}
+	if len(f.printer.Jobs()) != 0 {
+		t.Fatal("a rejected job was retried or accepted")
+	}
+	status, out = f.do(t, "GET", "/api/v1/jobs", nil)
+	if status != 200 || len(out["jobs"].([]any)) != 0 {
+		t.Fatalf("a rejected job appeared in history: %d %v", status, out)
+	}
+}
+
 func TestInfoAndDevices(t *testing.T) {
 	f := newFixture(t, false)
 	status, out := f.do(t, "GET", "/api/v1/info", nil)
