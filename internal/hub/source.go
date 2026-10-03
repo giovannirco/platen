@@ -39,7 +39,7 @@ type Source struct {
 	Path string `json:"path,omitempty"`
 	// PaperlessID is a document in Paperless-ngx.
 	PaperlessID int `json:"paperless_id,omitempty"`
-	// ScanID is a finished scan held by Platen.
+	// ScanID is a scan held by Platen; its document is prepared when needed.
 	ScanID string `json:"scan_id,omitempty"`
 	// Text is plain text to print as it is.
 	Text string `json:"text,omitempty"`
@@ -123,7 +123,10 @@ func (h *Hub) load(ctx context.Context, src Source) (*document, error) {
 			return nil, fmt.Errorf("%w: scan %q", ErrNotFound, src.ScanID)
 		}
 		if sc.Document == nil {
-			return nil, invalid("scan %s has no finished document yet; finish it first", src.ScanID)
+			sc, err = h.FinishScan(src.ScanID, "pdf")
+			if err != nil {
+				return nil, err
+			}
 		}
 		data, err = os.ReadFile(sc.Document.File)
 		if err != nil {

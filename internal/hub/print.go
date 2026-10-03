@@ -406,8 +406,9 @@ func (h *Hub) plan(ctx context.Context, dev *printerDev, attrs *ipp.Printer, doc
 		return nil, err
 	}
 	pl.pages, pl.ranges = pages, ranges
-	if pl.strategy == "passthrough" && len(pages) != pl.total {
-		// The printer has to drop pages itself; if it can't, Platen rasterizes instead.
+	if pl.strategy == "passthrough" && (len(pages) != pl.total || !sort.IntsAreSorted(pages)) {
+		// IPP page ranges preserve document order. Platen renders reordered
+		// pages itself, even when the selection includes every page.
 		switch {
 		case attrs.PageRanges && sort.IntsAreSorted(pages):
 			pl.ranges = pageRanges(pages)
