@@ -234,7 +234,7 @@ function paperlessCard() {
     h('span', { class: `pill ${on ? 'ok' : ''}` }, on ? 'Connected' : 'Off')));
   if (on) {
     const meta = h('div', { class: 'device-meta' });
-    if (state.meta) meta.append(h('span', {}, h('b', {}, String(state.meta.tags.length)), ' tags'), h('span', {}, h('b', {}, String(state.meta.correspondents.length)), ' correspondents'));
+    if (state.meta) meta.append(h('span', {}, h('b', {}, String(state.meta.tags?.length || 0)), ' tags'), h('span', {}, h('b', {}, String(state.meta.correspondents?.length || 0)), ' correspondents'));
     card.append(meta, h('div', { class: 'device-actions' }, h('a', { class: 'btn', href: state.info.paperless_url, target: '_blank', rel: 'noopener' }, 'Open Paperless')));
   } else {
     card.append(h('p', { class: 'note' }, 'Add a paperless section to the configuration to file scans automatically.'));
@@ -398,7 +398,7 @@ async function doPrint(button) {
       res = await api('POST', '/print', body);
     }
     toast(res.message);
-    await refreshJobs();
+    await refreshAfterPrint();
   });
 }
 
@@ -559,9 +559,9 @@ async function fileScan(button) {
   if (!state.meta) state.meta = await api('GET', '/paperless').catch(() => null);
   const meta = state.meta || { tags: [], correspondents: [], document_types: [] };
   $('#file-title').value = $('#scan-title').value.trim();
-  const fill = (id, list) => $(id).replaceChildren(...list.map((x) => h('option', { value: x.name })));
+  const fill = (id, list) => $(id).replaceChildren(...(list || []).map((x) => h('option', { value: x.name })));
   fill('#list-tags', meta.tags); fill('#list-correspondents', meta.correspondents); fill('#list-types', meta.document_types);
-  $('#tag-suggest').replaceChildren(...meta.tags.filter((t) => !t.name.startsWith('paperless-gpt')).slice(0, 12).map((t) => h('button', {
+  $('#tag-suggest').replaceChildren(...(meta.tags || []).filter((t) => !t.name.startsWith('paperless-gpt')).slice(0, 12).map((t) => h('button', {
     type: 'button', class: 'chip', onclick: () => {
       const input = $('#file-tags');
       const have = input.value.split(',').map((s) => s.trim()).filter(Boolean);
@@ -600,7 +600,7 @@ async function copyScan(button) {
       res = await api('POST', `/scans/${state.scan.id}/print`, { ...body, confirm: true });
     }
     toast(res.message);
-    refreshJobs();
+    await refreshAfterPrint();
   });
 }
 
@@ -658,17 +658,22 @@ async function refreshDevices() {
 async function refreshJobs() { state.jobs = (await api('GET', '/jobs?limit=30')).jobs; renderHome(); renderActivity(); }
 async function refreshScans() { state.scans = (await api('GET', '/scans?limit=30')).scans || []; renderHome(); renderActivity(); }
 
+async function refreshAfterPrint() {
+  try { await refreshJobs(); }
+  catch { toast('The print was sent, but activity could not be refreshed. Check Activity before printing again.', { bad: true }); }
+}
+
 function listen() {
   const es = new EventSource('/api/v1/events');
   let jobTimer, scanTimer;
-  es.addEventListener('job', () => { clearTimeout(jobTimer); jobTimer = setTimeout(() => { refreshJobs(); refreshDevices(); }, 200); });
+  es.addEventListener('job', () => { clearTimeout(jobTimer); jobTimer = setTimeout(() => { Promise.all([refreshJobs(), refreshDevices()]).catch(() => {}); }, 200); });
   const onScan = (ev) => {
     const e = JSON.parse(ev.data);
     if (state.scan && e.id === state.scan.id && e.data) { state.scan = e.data; renderScan(); }
-    clearTimeout(scanTimer); scanTimer = setTimeout(refreshScans, 200);
+    clearTimeout(scanTimer); scanTimer = setTimeout(() => refreshScans().catch(() => {}), 200);
   };
   es.addEventListener('scan', onScan);
-  es.addEventListener('scan.deleted', () => refreshScans());
+  es.addEventListener('scan.deleted', () => refreshScans().catch(() => {}));
 }
 
 // ---- routing -----------------------------------------------------------------

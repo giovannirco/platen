@@ -265,7 +265,7 @@ func (s *Store) Scans(limit int) ([]*Scan, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []*Scan
+	out := []*Scan{}
 	for _, e := range entries {
 		if !e.IsDir() || !scanIDPattern.MatchString(e.Name()) {
 			continue

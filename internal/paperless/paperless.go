@@ -105,7 +105,7 @@ type page[T any] struct {
 }
 
 func (c *Client) listNamed(ctx context.Context, kind string) ([]Named, error) {
-	var all []Named
+	all := []Named{}
 	path := "/api/" + kind + "/?page_size=250"
 	for i := 0; path != "" && i < 40; i++ {
 		var p page[Named]

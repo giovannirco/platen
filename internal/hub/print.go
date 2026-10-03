@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OpenPrinting/goipp"
+
 	// Decoders for the picture formats Platen accepts.
 	_ "image/gif"
 	_ "image/png"
@@ -226,6 +228,10 @@ func (h *Hub) Print(ctx context.Context, req PrintRequest) (*PrintResult, error)
 
 	job, err := h.submit(ctx, pl)
 	if err != nil {
+		var ippErr *ipp.Error
+		if errors.As(err, &ippErr) && ippErr.Status == goipp.StatusErrorBusy {
+			return nil, fmt.Errorf("%w: %s did not accept this job. Wait for the current job to finish, then try again", ErrPrinterBusy, dev.cfg.Name)
+		}
 		return nil, err
 	}
 	rec := store.PrintJob{

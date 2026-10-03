@@ -433,7 +433,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "unsupported", err.Error())
 	case errors.Is(err, hub.ErrLimitExceeded):
 		writeError(w, http.StatusUnprocessableEntity, "limit_exceeded", err.Error())
-	case errors.Is(err, hub.ErrScannerBusy):
+	case errors.Is(err, hub.ErrScannerBusy), errors.Is(err, hub.ErrPrinterBusy):
 		writeError(w, http.StatusConflict, "busy", err.Error())
 	case errors.Is(err, context.Canceled):
 		writeError(w, 499, "canceled", "the request was canceled")

@@ -34,6 +34,8 @@ type Printer struct {
 	Formats []string
 	// NotAccepting makes the printer refuse jobs.
 	NotAccepting bool
+	// Busy rejects Print-Job even when the printer advertises accepting jobs.
+	Busy bool
 	// PageRanges is the page-ranges-supported attribute.
 	PageRanges bool
 	// Down makes the printer answer every request with an HTTP error, as a
@@ -127,6 +129,11 @@ func (p *Printer) serve(w http.ResponseWriter, r *http.Request) {
 
 	case goipp.OpPrintJob:
 		doc, _ := io.ReadAll(r.Body)
+		if p.Busy {
+			resp.Code = goipp.Code(goipp.StatusErrorBusy)
+			resp.Operation.Add(attr("status-message", goipp.TagText, goipp.String("Not allowed to print")))
+			break
+		}
 		if p.NotAccepting {
 			resp.Code = goipp.Code(goipp.StatusErrorNotAcceptingJobs)
 			break

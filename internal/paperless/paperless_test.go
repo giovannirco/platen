@@ -3,6 +3,7 @@ package paperless_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -22,6 +23,13 @@ func TestClient(t *testing.T) {
 	tags, err := c.Tags(ctx)
 	if err != nil || len(tags) != 1 || tags[0].Name != "bills" {
 		t.Fatalf("tags: %v %v", tags, err)
+	}
+	types, err := c.DocumentTypes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := json.Marshal(types); err != nil || string(raw) != "[]" {
+		t.Fatalf("empty document types must serialize as an array: %s %v", raw, err)
 	}
 	if id, err := c.EnsureNamed(ctx, "tags", "BILLS"); err != nil || id != 1 {
 		t.Errorf("existing tag, other case: %d %v", id, err)
