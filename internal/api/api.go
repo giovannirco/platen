@@ -451,6 +451,12 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		writeError(w, http.StatusBadRequest, "invalid", "request body: "+err.Error())
 		return false
 	}
+	// Validate the whole body before a handler can start a print or scan.
+	var extra struct{}
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid", "request body must contain only one JSON value")
+		return false
+	}
 	return true
 }
 
