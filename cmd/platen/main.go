@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -104,6 +105,7 @@ func logger(w io.Writer, debug bool) *slog.Logger {
 func cmdCheck(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	cfgPath := fs.String("config", "", "configuration file")
+	jsonOutput := fs.Bool("json", false, "report connectivity and capabilities as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -112,15 +114,27 @@ func cmdCheck(ctx context.Context, args []string) error {
 		return err
 	}
 	defer h.Close()
-	failed := 0
+	result := h.Check(ctx)
+	if *jsonOutput {
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+			return fmt.Errorf("write check report: %w", err)
+		}
+	} else {
+		printCheckText(result)
+	}
+	if result.FailedChecks > 0 {
+		return fmt.Errorf("%d check(s) failed", result.FailedChecks)
+	}
+	return nil
+}
 
-	printers := h.Printers(ctx)
+func printCheckText(result *hub.CheckResult) {
+	printers := result.Printers
 	if len(printers) == 0 {
 		fmt.Println("No printers configured.")
 	}
 	for _, p := range printers {
 		if !p.Online {
-			failed++
 			fmt.Printf("✗ printer %s (%s): %s\n", p.ID, p.Name, p.Error)
 			continue
 		}
@@ -147,13 +161,12 @@ func cmdCheck(ctx context.Context, args []string) error {
 		}
 	}
 
-	scanners := h.Scanners(ctx)
+	scanners := result.Scanners
 	if len(scanners) == 0 {
 		fmt.Println("No scanners configured.")
 	}
 	for _, s := range scanners {
 		if !s.Online {
-			failed++
 			fmt.Printf("✗ scanner %s (%s): %s\n", s.ID, s.Name, s.Error)
 			continue
 		}
@@ -162,22 +175,16 @@ func cmdCheck(ctx context.Context, args []string) error {
 		fmt.Printf("    modes:    %s; %v dpi\n", strings.Join(s.ColorModes, ", "), s.Resolutions)
 	}
 
-	if h.PaperlessEnabled() {
-		meta, err := h.PaperlessMeta(ctx)
-		if err != nil {
-			failed++
-			fmt.Printf("✗ paperless: %v\n", err)
+	if p := result.Paperless; p.Enabled {
+		if !p.Online {
+			fmt.Printf("✗ paperless: %s\n", p.Error)
 		} else {
 			fmt.Printf("✓ paperless at %s: %d tag(s), %d correspondent(s), %d document type(s)\n",
-				meta.URL, len(meta.Tags), len(meta.Correspondents), len(meta.DocumentTypes))
+				p.URL, p.TagCount, p.CorrespondentCount, p.DocumentTypeCount)
 		}
 	} else {
 		fmt.Println("Paperless-ngx is not configured.")
 	}
-	if failed > 0 {
-		return fmt.Errorf("%d check(s) failed", failed)
-	}
-	return nil
 }
 
 func cmdPrint(ctx context.Context, args []string) error {

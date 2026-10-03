@@ -112,6 +112,25 @@ Examples for Docker Compose and Kubernetes are in [`deploy/`](deploy/).
     sources:  flatbed; up to 216 x 297 mm
 ```
 
+For scripts and agents, request a JSON report:
+
+```sh
+platen check -json -config platen.yaml > check.json
+```
+
+The report contains `ok`, `failed_checks`, `printers`, `scanners` and `paperless`.
+Device results include `online`, capabilities and an `error` when unreachable;
+Paperless includes `enabled`, `online`, its public URL and metadata counts
+(`tag_count`, `correspondent_count`, `document_type_count`). No configured tokens
+are included. Unconfigured devices are empty arrays, and an unconfigured
+Paperless instance is disabled; neither counts as a failure.
+
+The command exits **0** when all configured services answer, or **1** when a check
+fails. A failed check still produces the full JSON report on stdout, with a
+summary on stderr. `ok` reports connectivity; inspect the printer's `state` and
+`accepting_jobs` to see whether it is ready to print. Startup errors, such as an
+invalid configuration, go to stderr before a report is produced.
+
 ### 3. Protect it
 
 Without a token, anyone who can reach Platen can print and scan. Set at least one token:
