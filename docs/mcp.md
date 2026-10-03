@@ -17,7 +17,7 @@ The protocol changed a lot in the 2026-07-28 revision, and Platen is written for
 - **Multi round-trip requests.** When a tool needs a decision from the person, it does not call the client back. It returns an *input request*; the client asks the person and repeats the call with the answer. Platen uses this for:
   - `print_document`: "Print "Report" on Inkjet? It takes 12 sheets of paper";
   - `scan_document` with `ask_for_more_pages`: "Page 1 is scanned. To add a page, put it on the glass…".
-- **Signed request state.** The opaque state that accompanies an input request is signed with HMAC-SHA256 and expires after 30 minutes. For a print confirmation it carries a fingerprint of the job (printer, title, pages, copies, sheets); the confirmation is rejected if the retried call describes a different job. Set `server.state_secret` when running more than one replica, so they accept each other's state.
+- **Signed request state.** The opaque state that accompanies an input request is signed with HMAC-SHA256 and expires after 30 minutes. A print confirmation binds the document bytes and the resolved print settings, including the printer, page order, copies, paper, sides, colour and quality. If the document or settings change, the retried call is rejected and the client must request a new confirmation. This also applies when a URL returns different content between calls. Set `server.state_secret` when running more than one replica, so they accept each other's state.
 - **Structured results.** Every tool declares an output schema. Results carry text for the model, structured content for programs, pictures of scanned pages, and a resource link to the PDF instead of the PDF itself.
 - **Annotations.** Read-only tools are marked as such; `print_document` and `scan_document` are additive; `cancel_print_job` and `delete_scan` are destructive and idempotent.
 - **Cache hints.** The tool, prompt and resource lists carry a five-minute `ttlMs`, and tools are listed in a stable order, which helps clients and prompt caches.
@@ -41,6 +41,10 @@ Clients on older revisions still work. Over stdio the SDK bridges input requests
 | `file_scan_in_paperless` | uploads | waits for Paperless to import the document and returns its address |
 | `search_paperless` | no | |
 | `delete_scan` | deletes | a copy already filed in Paperless is not touched |
+
+To copy a scan, pass its `scan_id` to `print_document`. Platen prepares a PDF from the current pages, including pages added since the previous copy. Reading the PDF resource or calling a separate finish endpoint first is unnecessary. Use `dry_run: true` to check the page and sheet counts before printing.
+
+After an upgrade from 0.1.0, start a new confirmation request for any pending print approval; its previous signed state does not include the document fingerprint used in 0.1.1.
 
 ## Prompts
 

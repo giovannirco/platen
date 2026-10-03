@@ -1,7 +1,7 @@
 # Platen with Docker Compose. Copy platen.example.yaml to platen.yaml first.
 services:
   platen:
-    image: ghcr.io/giovannirco/platen:latest
+    image: ghcr.io/giovannirco/platen:0.1.1
     restart: unless-stopped
     ports:
       - "8080:8080"

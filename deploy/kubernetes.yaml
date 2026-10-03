@@ -61,7 +61,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: platen
-          image: ghcr.io/giovannirco/platen:latest
+          image: ghcr.io/giovannirco/platen:0.1.1
           args: ["serve", "-config", "/etc/platen/platen.yaml"]
           ports:
             - {name: http, containerPort: 8080}

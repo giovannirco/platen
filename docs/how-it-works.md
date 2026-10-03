@@ -17,6 +17,10 @@ Platen talks to printers with **IPP** (Internet Printing Protocol, RFC 8010/8011
 3. `Print-Job` carries the job options (copies, sides, colour mode, quality, paper) and the document.
 4. `Get-Job-Attributes` is polled until the job is done, so the history shows what happened.
 
+Page selection preserves the requested order. An unchanged PDF can pass through with all pages in their original order, or with ordered page ranges if the printer supports them. A selection such as `2,1` is rendered as PWG Raster when the printer supports it; on a PDF-only printer Platen rejects that selection before submitting a job.
+
+If `Print-Job` reports that the printer is busy, Platen reports that the job was not accepted. It does not retry the submission automatically. A successful submission and a later failure to refresh history are reported separately, so the browser does not encourage a duplicate print.
+
 ### Rendering
 
 PDF pages are rendered by **PDFium**, the engine used by Chrome, compiled to WebAssembly and run inside the Platen process by wazero. There is no cgo and no external program. One page is rendered at a time and streamed to the printer, so memory use does not grow with the length of the document.
@@ -53,6 +57,8 @@ Two details from real hardware:
 - Platen sends no "scan intent". With one, some scanners crop the page to what they detect as the document and take several times longer.
 
 Pages are stored as the JPEGs the scanner delivers. A PDF is built by wrapping those JPEGs (`internal/pdfw`), without recompressing them.
+
+Printing a stored scan builds its PDF when needed. Adding, removing or reordering pages invalidates the old PDF, so the next copy uses the current pages.
 
 ## Paperless-ngx
 

@@ -16,6 +16,8 @@ It is one static binary. It needs no CUPS, no SANE, no Ghostscript and no driver
 
 > **Status: early.** Version 0.1 works end to end and has a test suite, but it has been used with one printer model so far (see [Tested with](#tested-with)). Reports from other devices are very welcome.
 
+Download binaries for Linux, macOS and Windows from [Releases](https://github.com/giovannirco/platen/releases). See the [changelog](CHANGELOG.md) for changes and the [upgrade guide](docs/deployment.md) for existing installations.
+
 ## Why
 
 Three things were missing at my house:
@@ -88,12 +90,11 @@ platen serve -config platen.yaml
 With Docker:
 
 ```sh
-docker build -t platen .
 docker run --rm -p 8080:8080 -v platen-data:/data \
   -e PLATEN_PRINTER_URI=ipp://192.0.2.20/ipp/print \
   -e PLATEN_SCANNER_URL=http://192.0.2.20/eSCL \
   -e PLATEN_BASE_URL=http://<this-host>:8080 \
-  platen
+  ghcr.io/giovannirco/platen:0.1.1
 ```
 
 Examples for Docker Compose and Kubernetes are in [`deploy/`](deploy/).
@@ -185,7 +186,7 @@ Then just ask: *"Scan the page on the printer and tell me what it is"*, *"File i
 | `file_scan_in_paperless` | File a scan with title, tags, correspondent, type and date |
 | `search_paperless` | Find documents to print |
 
-There are also two prompts (`scan_and_file`, `print_carefully`) and resources for scanned documents (`platen://scans/{id}/document`).
+There are also two prompts (`scan_and_file`, `print_carefully`) and resources for scanned documents (`platen://scans/{id}/document`). Print a scan by passing its `scan_id` to `print_document`; Platen builds the PDF from the current pages automatically.
 
 **Who decides to use paper?** When a job needs more sheets than `limits.confirm_above_sheets`, Platen asks the person at the client, not the model: the tool call returns an input request, the client shows the question, and the call is retried with the answer (multi round-trip requests, MCP 2026-07-28). The state that travels with the question is signed, so a confirmation counts only for the job it was given for. With a client that can't show questions, the model is told to ask and to repeat the call with `confirm: true`.
 
@@ -212,6 +213,8 @@ curl -X POST -H 'Content-Type: application/json' \
 ```
 
 The full API is described at `/api/openapi.json`. The command line can print and scan too: `platen print report.pdf`, `platen scan -out bill.pdf -paperless`.
+
+If a printer is busy and refuses a job, the API returns HTTP 409 with error code `busy`. The document was not accepted; wait for the printer to finish before submitting it again. Once a job is accepted, follow its status in Activity. A failed history refresh does not mean the print failed.
 
 ![The scan page](docs/img/scan.png)
 
