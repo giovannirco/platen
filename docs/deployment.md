@@ -31,7 +31,7 @@ MemoryMax=1G
 NoNewPrivileges=true
 ```
 
-`platen.env` should set `PLATEN_AUTH_TOKENS` and `PLATEN_STATE_SECRET` at least. Mode `640`, owner root, group the service account if the unit is not root.
+`platen.env` should set `PLATEN_AUTH_TOKENS` and `PLATEN_STATE_SECRET` at least. The same value can be `server.state_secret` in the yaml; the environment variable overrides it. It signs print confirmations and the web session cookie. Without a stable secret, each process generates a random one, so every restart signs the web UI out and drops in-flight confirmations. Generate it once with `openssl rand -hex 24` and keep it across upgrades. Mode `640`, owner root, group the service account if the unit is not root.
 
 ### Main VLAN reachability (ops, not a code fix)
 
@@ -105,7 +105,7 @@ sudo mv /usr/local/bin/platen.next /usr/local/bin/platen
 sudo systemctl restart platen.service
 ```
 
-No data migration is required from 0.1.1. Confirmations that were pending across the restart need `PLATEN_STATE_SECRET` to have been set on the old process as well; otherwise start them again.
+No data migration is required from 0.1.1. Set `PLATEN_STATE_SECRET` (or `server.state_secret`) before the first 0.1.2 start and keep that value. It signs print confirmations and the web session cookie. Without it, every restart signs the web UI out. Confirmations that were pending on 0.1.1 were signed with that process's random secret and cannot be resumed; start them again.
 
 ## Containers
 
@@ -116,9 +116,18 @@ docker compose pull platen
 docker compose up -d platen
 ```
 
-The container listens on every interface in its own network namespace, which is not loopback, so it refuses to start without a token. The health check runs `platen healthcheck` because the image has no shell.
+The container listens on every interface in its own network namespace, which is not loopback, so it refuses to start without a token. The health check runs `platen healthcheck` because the image has no shell. The image creates `/data` owned by uid 65532 so a new named volume is writable under Compose `read_only: true`. Before cutting the `v0.1.2` tag, smoke `docker compose up` from `deploy/` with `.env` filled in from [`.env.example`](../deploy/.env.example), and confirm the process can write its data directory. An older volume created as root still needs a one-time `chown` to 65532, or a new volume.
 
-The Kubernetes example uses one replica, a PVC, `/healthz` for liveness and `/readyz` for readiness. Preserve the PVC and the Secret, including `state-secret`. Pin the image digest from the release once it is published. The NetworkPolicy uses the documentation range `192.0.2.0/24` as a placeholder for the printer VLAN; replace it before applying.
+The Kubernetes example uses one replica, a PVC, and `/healthz` for both liveness and readiness. `/readyz` and `platen_device_up` are for alerts: a sleeping printer must not remove the pod from the Service. Preserve the PVC and the Secret, including `state-secret`. Pin the image digest from the release once it is published. The NetworkPolicy uses the documentation range `192.0.2.0/24` as a placeholder for the printer VLAN; replace it before applying.
+
+After the image is published, check the keyless signature. The certificate identity is the release workflow on a tag, and the issuer is GitHub Actions:
+
+```sh
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/giovannirco/platen/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/giovannirco/platen@sha256:<digest>
+```
 
 ## Image tags
 

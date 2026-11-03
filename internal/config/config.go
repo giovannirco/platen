@@ -52,9 +52,10 @@ type Server struct {
 	ProxyPrefixes []netip.Prefix `yaml:"-" json:"-"`
 	// DataDir stores scans and job history.
 	DataDir string `yaml:"data_dir" json:"data_dir"`
-	// StateSecret signs the state that travels with multi-step MCP calls
-	// (for example a print confirmation). Set it when running more than one replica;
-	// otherwise a random one is generated at start.
+	// StateSecret signs multi-step MCP state (for example a print confirmation)
+	// and the web session cookie. Set server.state_secret or PLATEN_STATE_SECRET
+	// so in-flight confirmations and web sessions survive a restart. If it is
+	// empty, a random secret is generated for this process only.
 	StateSecret string `yaml:"state_secret" json:"-"`
 }
 

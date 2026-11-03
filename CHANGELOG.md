@@ -31,7 +31,7 @@ Planned tag: `v0.1.2`. This entry is the release note for that tag. The tag is n
 
 - An existing service that listens on every interface with an empty token list and no trusted network will not start until you set a token, a trusted network, a loopback bind, or an explicit insecure opt-in.
 - Web sessions from 0.1.1 are cookies that contain the raw token. They stop working. Sign in again.
-- Set `PLATEN_STATE_SECRET` (or `server.state_secret`) so a print confirmation can survive a restart. Without it, a new random secret is used each process.
+- Set `PLATEN_STATE_SECRET` (or `server.state_secret`) so a print confirmation and the web session survive a restart. Without it, a new random secret is used each process, and every restart signs the web UI out.
 - No scan or history migration is required. Run one replica; the data directory is local.
 - Container examples in this tree refer to `0.1.2`. That image exists only after the tag is pushed. Until then, the newest published release is `0.1.1`.
 

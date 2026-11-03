@@ -77,8 +77,11 @@ spec:
               valueFrom: {secretKeyRef: {name: platen, key: state-secret}}
             - name: PLATEN_PAPERLESS_TOKEN
               valueFrom: {secretKeyRef: {name: platen, key: paperless-token}}
+          # Readiness is process health, not device health. A sleeping inkjet
+          # fails /readyz and would remove the pod from the Service. Alert on
+          # /readyz or platen_device_up instead of using them as this probe.
           readinessProbe:
-            httpGet: {path: /readyz, port: http}
+            httpGet: {path: /healthz, port: http}
           livenessProbe:
             httpGet: {path: /healthz, port: http}
           resources:

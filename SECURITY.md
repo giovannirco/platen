@@ -45,7 +45,16 @@ Use a Paperless-ngx user that can upload and search the documents this hub shoul
 
 Continuous integration runs `govulncheck` and fails on findings. Release images are pushed with build provenance (`mode=max`) and an SBOM, and signed with keyless cosign. GitHub Actions are pinned to commit SHAs. The Go build image and the distroless base image are pinned by digest. Binary releases still include `checksums.txt`.
 
-Production installs should pin a version tag (and the checksum), not the moving `:latest` tag. `:latest` is updated only for release tags that do not contain a hyphen, so a prerelease does not move it.
+Production installs should pin a version tag (and the checksum), not the moving `:latest` tag. `:latest` is updated only for release tags that do not contain a hyphen, so a prerelease does not move it. A GitHub release whose tag contains `-` is published with `--prerelease` and `--latest=false`, so the GitHub Latest marker does not move either.
+
+Verify a published image with the keyless certificate from the release workflow:
+
+```sh
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/giovannirco/platen/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/giovannirco/platen@sha256:<digest>
+```
 
 ## Out of scope for this policy
 
