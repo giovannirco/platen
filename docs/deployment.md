@@ -18,7 +18,7 @@ Facts that are safe to write down here:
 - The binary is pinned to a release. The run notes record the checksum. Check it again on each upgrade (`sha256sum --check`).
 - Configuration is maintained in the site's `tools/platen` files and installed on the container. Those files are not in this repository. Do not copy tokens into git.
 - The token is taken from the password manager and installed as `/etc/platen/platen.env` mode `640`. The unit reads it with `EnvironmentFile=`.
-- The process listens on port **8090** on this container. `/healthz` is liveness. `/readyz` checks devices. `/metrics` is the Prometheus text. `/api/v1/info` reports the running version.
+- The process listens on port **8090** on this container. The binary running there today is **0.1.1**. On that version the meaningful HTTP probes are `/healthz` and `/api/v1/info` only. `/readyz` and `/metrics` arrive in **0.1.2**. Until the upgrade, those two paths are not probes: the 0.1.1 web interface answers them with **HTTP 200 and the SPA HTML**, so a blackbox check that treats any 200 as "up" is a false positive.
 
 A unit that matches that shape:
 
@@ -42,15 +42,22 @@ Checked around 3 November 2026:
 - mDNS on Main still advertises "Canon G6010 @ printhub", so phones discover a printer path that does not connect.
 - Family use without a token depends on the Main network being listed in `auth.trusted_networks`. That does nothing while Main cannot open the port.
 
-This needs a look at CT 146's interface, firewall and route, on the container and on the Proxmox host. Shipping a Platen release does not repair it. Until it is fixed, phones on Main that follow the mDNS advertisement will fail, and a trusted-network rule for Main will not see those clients.
+This is an operations gap, not a release blocker. It needs a look at CT 146's interface, firewall and route, on the container and on the Proxmox host. Shipping v0.1.2 does not repair it. Until the path is fixed, phones on Main that follow the mDNS advertisement will fail, and a trusted-network rule for Main will not see those clients.
 
 ### Monitoring and boot
 
-`/healthz` only means the process is running. It does not mean the printer answered. Use `/readyz` or `/metrics` (`platen_up`, `platen_device_up`), or a timer that runs `platen check -json` and alerts when the command fails or the container is down.
+While CT 146 is still on **0.1.1**, probe `/healthz` (process up) and `/api/v1/info` (version and configuration). Do not point a blackbox check at `/readyz` or `/metrics` yet. On 0.1.1 those URLs fall through to the web interface and return **HTTP 200 with SPA HTML**, which looks healthy and is not.
 
-On 22 October 2026 a power cut left CT 146 down for about a day without an alert. A blackbox probe of `/healthz` from another VLAN, or an alert when the CT is stopped, would have caught that. Device-down is a separate alert on `/readyz` or `platen_device_up`.
+`/healthz` only means the process is running. It does not mean the printer answered. **After the upgrade to 0.1.2**, use `/readyz` or `/metrics` (`platen_up`, `platen_device_up`) for device checks. A timer that runs `platen check -json` is valid on both versions. Alert when that command fails or when the container is down.
 
-**Boot and `nas-nvme`.** CT 146 (printhub), CT 147 (Paperless) and CT 140 (netboot) use an NFS root on `nas-nvme`. After the 2 November 2026 outage the Proxmox host came up before that storage, and the containers failed to start for hours. Give those containers a start delay or an ordering dependency on `nas-nvme`, or move the root disk onto local storage. Confirm the nightly vzdump of CT 146 is still scheduled; this repository cannot see the backup job. Re-check it after a storage outage.
+Two separate outages, not one duration:
+
+- **22 October 2026:** a power cut left CT 146 down for about 24 hours with no alert. A blackbox probe of `/healthz` from another VLAN, or an alert when the CT is stopped, would have caught that. Device-down is a separate alert, and it belongs on `/readyz` or `platen_device_up` only once 0.1.2 is running.
+- **2–3 November 2026:** about 11 hours from the host coming up around 21:12 until the containers were up around 08:01. See the boot note below. That gap is not the October silence.
+
+**Boot and `nas-nvme`.** CT 146 (printhub), CT 147 (Paperless) and CT 140 (netboot) use an NFS root on `nas-nvme`. On the November outage the Proxmox host came up before that storage, so those containers failed to start for the ~11 hours above. Give them a start delay or an ordering dependency on `nas-nvme`, or move the root disk onto local storage. Confirm the nightly vzdump of CT 146 is still scheduled; this repository cannot see the backup job. Re-check it after a storage outage.
+
+Operators who already have the private site10 notes can match this section to homelab-revamp PR #279 (`platen-02-ops-gaps`). That record is private. Nothing in this guide depends on opening it.
 
 ### Duplex
 
@@ -88,7 +95,7 @@ sudo systemctl start platen.service
 sudo systemctl is-active platen.service
 ```
 
-The backup contains credentials and scanned documents. Keep it private. Then check `/healthz`, `/readyz`, `/api/v1/info`, and the web UI. `platen check -json -config /etc/platen/platen.yaml` with the service environment loaded reports device connectivity, not whether the printer is ready to accept a job. `platen_device_up` in `/metrics` is the same check for a scraper.
+The backup contains credentials and scanned documents. Keep it private. Then check `/healthz`, `/api/v1/info`, and the web UI. On 0.1.2, also check `/readyz` and `/metrics`. Do not treat `/readyz` or `/metrics` as probes until that version is the one listening: on 0.1.1 they return the SPA HTML with HTTP 200. `platen check -json -config /etc/platen/platen.yaml` with the service environment loaded reports device connectivity, not whether the printer is ready to accept a job. After 0.1.2, `platen_device_up` in `/metrics` is the same check for a scraper.
 
 If the new process exits because authentication is missing, put the token back and start again. If it fails for another reason, restore the previous binary:
 

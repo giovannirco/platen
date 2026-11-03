@@ -252,7 +252,7 @@ Details and how to report a vulnerability are in [SECURITY.md](SECURITY.md).
 - Printing by URL does not reach private, loopback or link-local addresses unless you allow it (`fetch.allow_private_networks`). The default is still to allow public URLs. Turning that off by default is a later change.
 - Printing files by path is off until you list directories in `fetch.allowed_dirs`; hidden files are never read.
 - For Paperless, use a user that can upload and search, not an admin, and pass the token through the environment or `token_file`.
-- `/healthz` is process liveness. `/readyz` and `/metrics` check devices and are unauthenticated. Do not publish them on the internet.
+- `/healthz` is process liveness. `/readyz` and `/metrics` are new in 0.1.2: they check devices and are unauthenticated. Do not publish them on the internet. On 0.1.1 those paths are not probes; the web UI returns HTTP 200 and the SPA HTML, which a blackbox "200 means up" check will misread. Until an install is on 0.1.2, use `/healthz` and `/api/v1/info`.
 - A printer is a physical thing: the sheet limits exist so that a confused agent or script can't empty the paper tray.
 
 ## Tested with
