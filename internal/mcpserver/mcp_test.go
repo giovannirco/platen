@@ -168,6 +168,9 @@ func TestToolsAreDescribed(t *testing.T) {
 		if tool.Description == "" || tool.Title == "" || tool.Annotations == nil || tool.OutputSchema == nil {
 			t.Errorf("%s lacks a description, title, annotations or output schema", name)
 		}
+		if a := tool.Annotations; a == nil || a.DestructiveHint == nil || a.OpenWorldHint == nil {
+			t.Errorf("%s annotations must set readOnly, destructive, idempotent and openWorld hints: %+v", name, tool.Annotations)
+		}
 	}
 	if a := tools["printer_status"].Annotations; !a.ReadOnlyHint {
 		t.Error("printer_status should be read-only")

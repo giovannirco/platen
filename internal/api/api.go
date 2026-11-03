@@ -4,7 +4,11 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,18 +30,26 @@ import (
 
 // Server wires the hub to HTTP.
 type Server struct {
-	hub     *hub.Hub
-	cfg     *config.Config
-	log     *slog.Logger
-	version string
-	mcp     http.Handler
-	hosts   map[string]bool
+	hub       *hub.Hub
+	cfg       *config.Config
+	log       *slog.Logger
+	version   string
+	mcp       http.Handler
+	hosts     map[string]bool
+	cookieKey []byte
 }
 
 // New returns a Server. mcp is the handler for the MCP endpoint and may be nil.
 func New(h *hub.Hub, log *slog.Logger, version string, mcp http.Handler) *Server {
 	cfg := h.Config()
 	s := &Server{hub: h, cfg: cfg, log: log, version: version, mcp: mcp, hosts: map[string]bool{"localhost": true}}
+	s.cookieKey = []byte(cfg.Server.StateSecret)
+	if len(s.cookieKey) == 0 {
+		s.cookieKey = make([]byte, 32)
+		if _, err := rand.Read(s.cookieKey); err != nil {
+			panic(err)
+		}
+	}
 	if u, err := url.Parse(cfg.Server.BaseURL); err == nil {
 		s.hosts[strings.ToLower(u.Hostname())] = true
 	}
@@ -51,6 +63,8 @@ func New(h *hub.Hub, log *slog.Logger, version string, mcp http.Handler) *Server
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
+	mux.HandleFunc("GET /readyz", s.readyz)
+	mux.HandleFunc("GET /metrics", s.metrics)
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/info", s.info)
@@ -200,13 +214,17 @@ func (s *Server) classify(r *http.Request) access {
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a := s.classify(r)
-		if (a == accessOpen || a == accessTrusted) && r.URL.Path != "/healthz" && !s.knownHost(r.Host) {
+		if (a == accessOpen || a == accessTrusted) && !probePath(r.URL.Path) && !s.knownHost(r.Host) {
 			writeError(w, http.StatusMisdirectedRequest, "unknown_host",
 				fmt.Sprintf("Platen was reached as %q, which it does not know. Set server.base_url to this address or add the name to server.allowed_hosts. Requests that carry an access token are not checked.", hostName(r.Host)))
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), accessKey{}, a)))
 	})
+}
+
+func probePath(path string) bool {
+	return path == "/healthz" || path == "/readyz" || path == "/metrics"
 }
 
 func hostName(hostport string) string {
@@ -346,9 +364,44 @@ func (s *Server) hasToken(r *http.Request) bool {
 		return s.bearer(r)
 	}
 	if c, err := r.Cookie(cookieName); err == nil {
-		return s.validToken(c.Value)
+		return s.validSession(c.Value)
 	}
 	return false
+}
+
+// sessionValue is an HMAC of the bearer token. The cookie is not the token, so
+// a leaked cookie cannot be replayed as Authorization: Bearer.
+func (s *Server) sessionValue(token string) string {
+	mac := hmac.New(sha256.New, s.cookieKey)
+	_, _ = mac.Write([]byte("platen-session-v1\x00"))
+	_, _ = mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) validSession(value string) bool {
+	ok := false
+	for _, t := range s.cfg.Auth.Tokens {
+		if subtle.ConstantTimeCompare([]byte(s.sessionValue(t)), []byte(value)) == 1 {
+			ok = true
+		}
+	}
+	return ok
+}
+
+// externalHTTPS reports whether the browser connection is HTTPS. X-Forwarded-Proto
+// is honoured only from a configured trusted proxy.
+func (s *Server) externalHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if !strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return false
+	}
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	return containsAddr(s.cfg.Server.ProxyPrefixes, ap.Addr().Unmap().WithZone(""))
 }
 
 // authenticate lets a request through when guard found a reason to.
@@ -384,8 +437,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: body.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
-		Secure: r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"), MaxAge: 180 * 24 * 3600,
+		Name: cookieName, Value: s.sessionValue(body.Token), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Secure: s.externalHTTPS(r), MaxAge: 180 * 24 * 3600,
 	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -4,7 +4,9 @@
 // It is written for the 2026-07-28 revision of the protocol and stays usable by
 // older clients:
 //
-//   - The HTTP endpoint is stateless: any replica can answer any request.
+//   - The HTTP endpoint keeps no session. Scans and print history still live in a
+//     local directory, so run a single replica. Set server.state_secret (or
+//     PLATEN_STATE_SECRET) so a restart can still verify an in-flight confirmation.
 //   - Tools that need a person's decision (printing a lot of paper, scanning the
 //     next page) ask through multi round-trip requests instead of calling the
 //     client back. The state that travels with those requests is signed.
@@ -142,23 +144,35 @@ func ptr[T any](v T) *T { return &v }
 
 // readOnly marks a tool that changes nothing.
 func readOnly(title string) *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: true, OpenWorldHint: ptr(false)}
+	return &mcp.ToolAnnotations{
+		Title: title, ReadOnlyHint: true, IdempotentHint: true,
+		DestructiveHint: ptr(false), OpenWorldHint: ptr(false),
+	}
 }
 
 // additive marks a tool that adds something (a print, a scan, a filed document)
-// without destroying anything.
+// without destroying anything. The world is the configured devices, not the public internet.
 func additive(title string) *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{Title: title, DestructiveHint: ptr(false), OpenWorldHint: ptr(false)}
+	return &mcp.ToolAnnotations{
+		Title: title, ReadOnlyHint: false, IdempotentHint: false,
+		DestructiveHint: ptr(false), OpenWorldHint: ptr(false),
+	}
 }
 
 // reaching marks an additive tool that can also read from the outside world.
 func reaching(title string) *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{Title: title, DestructiveHint: ptr(false), OpenWorldHint: ptr(true)}
+	return &mcp.ToolAnnotations{
+		Title: title, ReadOnlyHint: false, IdempotentHint: false,
+		DestructiveHint: ptr(false), OpenWorldHint: ptr(true),
+	}
 }
 
 // destructive marks a tool that removes or stops something.
 func destructive(title string) *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{Title: title, DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)}
+	return &mcp.ToolAnnotations{
+		Title: title, ReadOnlyHint: false, IdempotentHint: true,
+		DestructiveHint: ptr(true), OpenWorldHint: ptr(false),
+	}
 }
 
 func uiMeta(uri string) mcp.Meta {

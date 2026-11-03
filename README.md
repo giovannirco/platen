@@ -14,7 +14,7 @@ It is one static binary. It needs no CUPS, no SANE, no Ghostscript and no driver
 
 ![The home page: ink levels, scanner and Paperless status](docs/img/home.png)
 
-> **Status: early.** Version 0.1 works end to end and has a test suite, but it has been used with one printer model so far (see [Tested with](#tested-with)). Reports from other devices are very welcome.
+> **Status: early, and not a finished product.** 0.1.x is a personal homelab server with a test suite. It has been used with one printer model (see [Tested with](#tested-with)). The supported install is a binary and systemd on an LXC. Compose and Kubernetes files are examples. Reports from other devices are welcome.
 
 Download binaries for Linux, macOS and Windows from [Releases](https://github.com/giovannirco/platen/releases). See the [changelog](CHANGELOG.md) for changes and the [upgrade guide](docs/deployment.md) for existing installations.
 
@@ -32,7 +32,7 @@ Three things were missing at my house:
 
 - PDF, JPEG, PNG, GIF, TIFF, WebP, BMP and plain text; from an upload, a URL, a Paperless document, an earlier scan, or a file path you allow.
 - Works with printers that take PDF (sent untouched) and with printers that don't (rendered in-process and sent as PWG Raster).
-- Copies, two-sided printing (including the back-side rotation raster printers ask for), colour or black, draft/normal/high quality, paper size, page ranges.
+- Copies, two-sided printing in the IPP attributes (including the back-side rotation raster printers ask for), colour or black, draft/normal/high quality, paper size, page ranges. Duplex has not been checked on paper on the Canon; see [Tested with](#tested-with).
 - Ink or toner levels, paper, printer state and queue.
 - **Guard rails**: a job above a sheet threshold needs a confirmation; hard limits on sheets and copies; a dry run that reports pages and sheets without printing.
 
@@ -69,7 +69,7 @@ A CUPS queue works as a printer too: `ipp://<cups-host>:631/printers/<queue>`.
 
 ### 2. Run it
 
-With Go 1.27 or newer:
+With Go 1.27.3 or newer:
 
 ```sh
 go install github.com/giovannirco/platen/cmd/platen@latest
@@ -77,8 +77,10 @@ go install github.com/giovannirco/platen/cmd/platen@latest
 PLATEN_PRINTER_URI=ipp://192.0.2.20/ipp/print \
 PLATEN_SCANNER_URL=http://192.0.2.20/eSCL \
 platen check          # talks to the devices and reports what they can do
-platen serve          # then open http://localhost:8080
+platen serve          # loopback only; open http://127.0.0.1:8080
 ```
+
+`go install` stamps the version, so `platen version` prints the module version you installed. The default listen address is `127.0.0.1:8080`. Binding every interface requires a token or a trusted network (see [Protect it](#3-protect-it)).
 
 Or with a configuration file (see [`platen.example.yaml`](platen.example.yaml)):
 
@@ -87,17 +89,20 @@ cp platen.example.yaml platen.yaml   # edit it
 platen serve -config platen.yaml
 ```
 
-With Docker:
+With Docker, publish loopback on the host and set a token. The process inside the container listens on every interface, which Platen refuses to do without one:
 
 ```sh
-docker run --rm -p 8080:8080 -v platen-data:/data \
+docker run --rm -p 127.0.0.1:8080:8080 -v platen-data:/data \
+  -e PLATEN_AUTH_TOKENS="$(openssl rand -hex 24)" \
   -e PLATEN_PRINTER_URI=ipp://192.0.2.20/ipp/print \
   -e PLATEN_SCANNER_URL=http://192.0.2.20/eSCL \
-  -e PLATEN_BASE_URL=http://<this-host>:8080 \
-  ghcr.io/giovannirco/platen:0.1.1
+  -e PLATEN_BASE_URL=http://127.0.0.1:8080 \
+  ghcr.io/giovannirco/platen:0.1.2
 ```
 
-Examples for Docker Compose and Kubernetes are in [`deploy/`](deploy/).
+To reach that container from another machine, publish one explicit host address (`-p 192.0.2.10:8080:8080`) and keep `PLATEN_AUTH_TOKENS` set. The `0.1.2` image exists after the `v0.1.2` tag is pushed; until then use `0.1.1`.
+
+The supported production install is a binary and systemd. Compose and Kubernetes examples are in [`deploy/`](deploy/) and are not that path. See [docs/deployment.md](docs/deployment.md).
 
 `platen check` is the first thing to run. It prints what Platen sees:
 
@@ -134,13 +139,15 @@ invalid configuration, go to stderr before a report is produced.
 
 ### 3. Protect it
 
-Without a token, anyone who can reach Platen can print and scan. Set at least one token:
+`platen serve` will not listen on a non-loopback address unless a token or a trusted network is set. Loopback (`127.0.0.1`, `::1`, `localhost`) is the local-development exception. `auth.open: true`, `--insecure-open` and `PLATEN_ALLOW_OPEN=1` are the same explicit opt-in, and they are logged as insecure.
+
+Set a token before you publish the port:
 
 ```sh
 export PLATEN_AUTH_TOKENS="$(openssl rand -hex 24)"
 ```
 
-The web interface asks for it once; scripts and agents send `Authorization: Bearer <token>`.
+The web interface asks for it once; scripts and agents send `Authorization: Bearer <token>`. One token can call every API and MCP tool. It is not a limited role.
 
 At home you may not want the family to type a token on their phones. List the home network as trusted, and everything else still needs one:
 
@@ -235,26 +242,39 @@ More in [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Security
 
-- Set `auth.tokens`. The token protects the API, the MCP endpoint and the web interface. `auth.trusted_networks` lets named networks in without one.
+Details and how to report a vulnerability are in [SECURITY.md](SECURITY.md).
+
+- A non-loopback listen address requires `auth.tokens` or `auth.trusted_networks`. The open-by-default behaviour is refused unless you opt in.
+- One token is one trust domain: print, scan, the API and every MCP tool. There are no per-tool scopes.
+- `auth.trusted_networks` lets named networks in without a token. Name a reverse proxy in `server.trusted_proxies`, or every client behind it looks like the proxy. `X-Forwarded-Proto` is read only from those proxies.
+- The browser session cookie is an HMAC of the token, not the token.
 - A request that gets in without a token is only served under a host name Platen knows (protection against DNS rebinding), and cross-site browser requests are refused.
-- Printing by URL does not reach private, loopback or link-local addresses unless you allow it (`fetch.allow_private_networks`), so Platen can't be used to read your internal network.
+- Printing by URL does not reach private, loopback or link-local addresses unless you allow it (`fetch.allow_private_networks`). The default is still to allow public URLs. Turning that off by default is a later change.
 - Printing files by path is off until you list directories in `fetch.allowed_dirs`; hidden files are never read.
+- For Paperless, use a user that can upload and search, not an admin, and pass the token through the environment or `token_file`.
+- `/healthz` is process liveness. `/readyz` and `/metrics` check devices and are unauthenticated. Do not publish them on the internet.
 - A printer is a physical thing: the sheet limits exist so that a confused agent or script can't empty the paper tray.
 
 ## Tested with
 
-| Device or software | Notes |
+| Device or software | What was actually checked |
 |---|---|
-| Canon PIXMA G6010 / G6000 series | Raster-only printer (no PDF), duplex, eSCL flatbed. Printing, scanning and ink levels verified on the real device |
+| Canon PIXMA G6010 / G6000 series | Raster-only (no PDF). Printing, flatbed scan and ink levels were checked on the real device. **Duplex was not checked on paper.** The document feeder (ADF) is untested. URF (Apple Raster) is not implemented |
 | CUPS 2.4 queue | PDF passthrough |
 | Paperless-ngx 3.2 | Filing, search, printing a stored document |
-| Go MCP SDK 1.8 clients | stdio and stateless HTTP, protocol 2026-07-28 |
+| Go MCP SDK 1.8 clients | stdio and stateless HTTP, protocol 2026-07-28. One Platen process; the scan store is a local directory |
 | MCP Inspector (TypeScript SDK) | every tool, prompt and resource over HTTP |
 | MCP Apps reference host (ext-apps 2.0) | both views, with calls from the view back to Platen |
 
 Platen should work with any printer that supports IPP with PDF, JPEG or PWG Raster, and any eSCL scanner. If yours behaves differently, please open an issue with the output of `platen check`.
 
-Known limits: Office documents are not converted (print them to PDF first); a document feeder is supported by the code but has not been tested on hardware; URF (Apple Raster) is not implemented because every tested printer also takes PWG Raster.
+Known limits:
+
+- Office documents are not converted. Print them to PDF first.
+- Duplex is implemented and unverified on the Canon (homelab follow-up 158).
+- A document feeder is implemented and has not been tested on hardware.
+- URF (Apple Raster) is not implemented. The tested printer also accepts PWG Raster.
+- There is no per-tool permission model. See [SECURITY.md](SECURITY.md).
 
 ## Development
 

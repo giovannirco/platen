@@ -493,3 +493,119 @@ func TestEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionCookieIsNotTheBearer(t *testing.T) {
+	f := newFixture(t, true)
+	resp, err := http.Post(f.srv.URL+"/api/v1/login", "application/json", strings.NewReader(`{"token":"`+token+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || len(resp.Cookies()) != 1 {
+		t.Fatalf("login: %d cookies %d", resp.StatusCode, len(resp.Cookies()))
+	}
+	c := resp.Cookies()[0]
+	if c.Value == token || strings.Contains(c.Value, token) {
+		t.Fatalf("cookie stores the raw bearer: %q", c.Value)
+	}
+	if c.Secure {
+		t.Fatal("X-Forwarded-Proto from a client that is not a trusted proxy must not mark the cookie Secure")
+	}
+	req, _ := http.NewRequest(http.MethodGet, f.srv.URL+"/api/v1/info", nil)
+	req.AddCookie(c)
+	got, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Body.Close()
+	if got.StatusCode != 200 {
+		t.Fatalf("session cookie: %d", got.StatusCode)
+	}
+	// A cookie set to the raw token is not a session.
+	req, _ = http.NewRequest(http.MethodGet, f.srv.URL+"/api/v1/info", nil)
+	req.AddCookie(&http.Cookie{Name: "platen_token", Value: token})
+	got, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Body.Close()
+	if got.StatusCode != 401 {
+		t.Fatalf("raw token presented as a cookie: %d", got.StatusCode)
+	}
+}
+
+func TestForwardedProtoRequiresTrustedProxy(t *testing.T) {
+	f := newFixtureWith(t, func(cfg *config.Config) {
+		cfg.Auth.Tokens = []string{token}
+		cfg.Server.TrustedProxies = []string{"127.0.0.1"}
+	})
+	req, _ := http.NewRequest(http.MethodPost, f.srv.URL+"/api/v1/login", strings.NewReader(`{"token":"`+token+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if len(resp.Cookies()) != 1 || !resp.Cookies()[0].Secure {
+		t.Fatalf("trusted proxy did not honour X-Forwarded-Proto: %+v", resp.Cookies())
+	}
+}
+
+func TestReadyzAndMetrics(t *testing.T) {
+	f := newFixture(t, true)
+	resp, err := http.Get(f.srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("readyz: %d %s", resp.StatusCode, body)
+	}
+	resp, err = http.Get(f.srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Type"), "text/plain") {
+		t.Fatalf("metrics: %d %s", resp.StatusCode, body)
+	}
+	for _, line := range []string{
+		`platen_up 1`,
+		`platen_info{version="test"} 1`,
+		`platen_device_up{kind="printer",id="inkjet"} 1`,
+		`platen_device_up{kind="scanner",id="flatbed"} 1`,
+		`platen_device_up{kind="paperless",id="paperless"} 1`,
+	} {
+		if !strings.Contains(string(body), line) {
+			t.Errorf("metrics missing %q in %s", line, body)
+		}
+	}
+	if strings.Contains(string(body), token) || strings.Contains(string(body), testutil.PaperlessToken) {
+		t.Fatal("metrics include a secret")
+	}
+
+	// A second fixture: the status cache would hide a printer that dies within 5s.
+	f = newFixture(t, true)
+	f.printer.Down.Store(true)
+	resp, err = http.Get(f.srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 503 || !strings.Contains(string(body), `"ok":false`) {
+		t.Fatalf("readyz with a down printer: %d %s", resp.StatusCode, body)
+	}
+	resp, err = http.Get(f.srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), `platen_device_up{kind="printer",id="inkjet"} 0`) {
+		t.Fatalf("metrics did not mark the printer down: %s", body)
+	}
+}

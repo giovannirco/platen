@@ -1,18 +1,42 @@
-# Platen with Docker Compose. Copy platen.example.yaml to platen.yaml first.
+# Example only. The supported production path is a static binary and systemd
+# on an LXC. See docs/deployment.md. Compose is not that path.
+#
+# Copy deploy/.env.example to deploy/.env and set the two required secrets
+# (openssl rand -hex 24). Compose fails closed if either is missing.
+# Copy platen.example.yaml to the working directory as platen.yaml first.
 services:
   platen:
-    image: ghcr.io/giovannirco/platen:0.1.1
+    image: ghcr.io/giovannirco/platen:0.1.2
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "8080:8080"
+      # Published on loopback. Inside the container the process still listens on
+      # every interface (see the image), so a token is required. To reach Platen
+      # from other machines, replace this with an explicit host address such as
+      # "192.0.2.10:8080:8080" and keep the token set. Do not publish every
+      # interface without a token.
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./platen.yaml:/etc/platen/platen.yaml:ro
       - platen-data:/data
+    tmpfs:
+      - /tmp
     environment:
       PLATEN_CONFIG: /etc/platen/platen.yaml
       # Secrets come from the environment, so the config file can live in git.
-      PLATEN_AUTH_TOKENS: ${PLATEN_AUTH_TOKENS:-}
+      PLATEN_AUTH_TOKENS: ${PLATEN_AUTH_TOKENS:?set PLATEN_AUTH_TOKENS}
+      # Stable across restarts so an in-flight print confirmation stays valid.
+      PLATEN_STATE_SECRET: ${PLATEN_STATE_SECRET:?set PLATEN_STATE_SECRET}
       PLATEN_PAPERLESS_TOKEN: ${PLATEN_PAPERLESS_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/platen", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 volumes:
   platen-data:

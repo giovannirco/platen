@@ -7,6 +7,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -29,7 +30,8 @@ type Config struct {
 
 // Server holds the HTTP listener and storage settings.
 type Server struct {
-	// Listen is the address the HTTP server binds to, e.g. ":8080".
+	// Listen is the address the HTTP server binds to. The default is loopback.
+	// ":8080" listens on every interface and is refused when auth is open.
 	Listen string `yaml:"listen" json:"listen"`
 	// BaseURL is the address people and agents use to reach Platen. It is used to
 	// build links in API and MCP results. Defaults to http://localhost:<port>.
@@ -58,21 +60,69 @@ type Server struct {
 
 // Auth controls access to the API, the UI and the MCP endpoint.
 type Auth struct {
-	// Tokens are accepted bearer tokens.
+	// Tokens are accepted bearer tokens. One token can print, scan and call every
+	// API and MCP tool: there are no per-tool scopes.
 	Tokens []string `yaml:"tokens"`
 	// TrustedNetworks lists networks (CIDR) or single addresses whose clients need
 	// no token, for example the home network: phones and laptops there just open
 	// the web interface, while everything else has to present a token.
 	//
-	// With neither tokens nor trusted networks, Platen is open to anyone who can
-	// reach it. With trusted networks and no token, only those networks get in.
+	// With neither tokens nor trusted networks, Platen would be open to anyone who
+	// can reach it. serve refuses that on a non-loopback address unless Open is set.
+	// With trusted networks and no token, only those networks get in.
 	TrustedNetworks []string `yaml:"trusted_networks"`
+	// AllowOpen is auth.open. It is an explicit opt-in to serve with no tokens and
+	// no trusted networks on a non-loopback address. It is the same gate as
+	// --insecure-open and PLATEN_ALLOW_OPEN=1, and it is logged as insecure.
+	AllowOpen bool `yaml:"open"`
 	// TrustedPrefixes is TrustedNetworks, parsed by Validate.
 	TrustedPrefixes []netip.Prefix `yaml:"-"`
 }
 
 // Open reports whether Platen lets everyone in: no token and no trusted network.
+// AllowOpen does not change this; it only permits serve to bind a non-loopback address.
 func (a Auth) Open() bool { return len(a.Tokens) == 0 && len(a.TrustedNetworks) == 0 }
+
+// ErrOpenListen is returned when serve would expose an unauthenticated listener
+// on a non-loopback address without an explicit opt-in.
+var ErrOpenListen = errors.New("refusing to listen without authentication")
+
+// CheckOpenListen refuses to serve when Auth is open and listen is not a loopback
+// address, unless insecureOpen is set. insecureOpen is true for --insecure-open.
+// auth.open and PLATEN_ALLOW_OPEN=1 set Auth.AllowOpen and take the same path.
+func (c *Config) CheckOpenListen(insecureOpen bool) error {
+	if !c.Auth.Open() || ListenIsLoopback(c.Server.Listen) {
+		return nil
+	}
+	if c.Auth.AllowOpen || insecureOpen {
+		return nil
+	}
+	return fmt.Errorf("%w: listen address %q has no auth token and no trusted network. Set auth.tokens or PLATEN_AUTH_TOKENS, set auth.trusted_networks, or bind a loopback address such as 127.0.0.1:8080. To expose an open service anyway, set auth.open: true, pass --insecure-open, or set PLATEN_ALLOW_OPEN=1", ErrOpenListen, c.Server.Listen)
+}
+
+// ListenIsLoopback reports whether addr is a loopback host (127.0.0.0/8, ::1,
+// or the name localhost). An empty host, 0.0.0.0 and :: listen on every
+// interface and are not loopback.
+func ListenIsLoopback(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	} else {
+		host = strings.Trim(host, "[]")
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return ip.Unmap().IsLoopback()
+}
 
 // Printer is an IPP printer or print queue.
 type Printer struct {
@@ -144,7 +194,7 @@ var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 // Default returns a configuration with every default applied and no devices.
 func Default() *Config {
 	return &Config{
-		Server: Server{Listen: ":8080", DataDir: "./data"},
+		Server: Server{Listen: "127.0.0.1:8080", DataDir: "./data"},
 		Limits: Limits{ConfirmAboveSheets: 5, MaxSheets: 100, MaxCopies: 10, MaxUploadMB: 100, ScanRetentionDays: 30},
 		Fetch:  Fetch{AllowURLs: true},
 	}
@@ -193,6 +243,12 @@ func (c *Config) applyEnv() error {
 	if v := os.Getenv("PLATEN_AUTH_TOKENS"); v != "" {
 		c.Auth.Tokens = splitList(v)
 	}
+	// PLATEN_ALLOW_OPEN=1 is an alias of auth.open and --insecure-open.
+	// Only an affirmative value enables it. "0" or "false" does not turn the
+	// opt-in off and does not skip the startup check.
+	if allowOpenValue(os.Getenv("PLATEN_ALLOW_OPEN")) {
+		c.Auth.AllowOpen = true
+	}
 	if v := os.Getenv("PLATEN_TRUSTED_NETWORKS"); v != "" {
 		c.Auth.TrustedNetworks = splitList(v)
 	}
@@ -227,7 +283,7 @@ func (c *Config) applyEnv() error {
 func (c *Config) Validate() error {
 	var errs []error
 	if c.Server.Listen == "" {
-		c.Server.Listen = ":8080"
+		c.Server.Listen = "127.0.0.1:8080"
 	}
 	if c.Server.DataDir == "" {
 		c.Server.DataDir = "./data"
@@ -380,6 +436,15 @@ func (c *Config) DefaultScanner() *Scanner {
 		}
 	}
 	return nil
+}
+
+func allowOpenValue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitList(v string) []string {
