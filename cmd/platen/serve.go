@@ -9,10 +9,22 @@ import (
 	"os"
 	"time"
 
+	"log/slog"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/giovannirco/platen/internal/api"
+	"github.com/giovannirco/platen/internal/config"
 	"github.com/giovannirco/platen/internal/mcpserver"
+)
+
+// Timeouts are sized for the default 100MB upload on a slow link, and for
+// idle keep-alives between requests. WriteTimeout is left unset: the event
+// stream is a long-lived response, and a write deadline would cut it off.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 5 * time.Minute
+	idleTimeout       = 2 * time.Minute
 )
 
 // cmdServe runs the web interface, the REST API and the MCP endpoint.
@@ -20,6 +32,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	cfgPath := fs.String("config", "", "configuration file")
 	debug := fs.Bool("debug", false, "log every request")
+	insecureOpen := fs.Bool("insecure-open", false, "serve with no token and no trusted network on a non-loopback address (insecure; same gate as auth.open and PLATEN_ALLOW_OPEN=1)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -30,6 +43,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	defer h.Close()
 	cfg := h.Config()
+	if err := cfg.CheckOpenListen(*insecureOpen); err != nil {
+		return err
+	}
 
 	mcpSrv := mcpserver.New(h, mcpserver.Options{Version: version, Stateless: true, Logger: log})
 	handler := api.New(h, log, version, mcpserver.HTTPHandler(mcpSrv, log)).Handler()
@@ -37,7 +53,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 	go h.RunMaintenance(ctx)
@@ -50,12 +68,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	log.Info("Platen is running", "version", version, "listen", ln.Addr().String(), "url", cfg.Server.BaseURL, "mcp", cfg.Server.BaseURL+"/mcp",
 		"printers", len(cfg.Printers), "scanners", len(cfg.Scanners), "paperless", h.PaperlessEnabled(),
 		"tokens", len(cfg.Auth.Tokens), "trusted_networks", cfg.Auth.TrustedNetworks)
-	switch {
-	case cfg.Auth.Open():
-		log.Warn("no access token and no trusted network is set: anyone who can reach this address can print and scan (set auth.tokens or auth.trusted_networks)")
-	case len(cfg.Auth.Tokens) == 0:
-		log.Info("no access token is set: only clients in the trusted networks can use Platen")
-	}
+	logOpenAuth(log, cfg)
+	logInsecureTLS(log, cfg)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
@@ -71,6 +85,41 @@ func cmdServe(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+func logOpenAuth(log *slog.Logger, cfg *config.Config) {
+	switch {
+	case !cfg.Auth.Open():
+		if len(cfg.Auth.Tokens) == 0 {
+			log.Info("no access token is set: only clients in the trusted networks can use Platen")
+		}
+	case config.ListenIsLoopback(cfg.Server.Listen):
+		log.Warn("no access token and no trusted network: Platen is open on a loopback address only")
+	default:
+		log.Warn("INSECURE: Platen is open on a non-loopback address because auth.open, --insecure-open or PLATEN_ALLOW_OPEN=1 was set. Anyone who can reach this address can print and scan")
+	}
+}
+
+func logInsecureTLS(log *slog.Logger, cfg *config.Config) {
+	var printers, scanners []string
+	for _, p := range cfg.Printers {
+		if p.InsecureTLS {
+			printers = append(printers, p.ID)
+		}
+	}
+	for _, s := range cfg.Scanners {
+		if s.InsecureTLS {
+			scanners = append(scanners, s.ID)
+		}
+	}
+	if len(printers)+len(scanners) == 0 {
+		return
+	}
+	log.Warn("TLS certificate verification is disabled for devices with insecure_tls; self-signed certificates are accepted",
+		"printers", printers, "scanners", scanners)
+	if os.Getenv("PLATEN_PRINTER_URI") != "" || os.Getenv("PLATEN_SCANNER_URL") != "" {
+		log.Warn("PLATEN_PRINTER_URI and PLATEN_SCANNER_URL enable insecure TLS for the device they add")
+	}
 }
 
 // cmdMCP runs the MCP server on standard input and output, for AI clients that

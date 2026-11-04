@@ -1,12 +1,17 @@
-# Platen on Kubernetes: one Deployment, one Service, one volume.
-# The pod only needs to reach the printer, the scanner and Paperless over the
-# network; it needs no host access, no USB and no multicast.
+# Example only. The supported production path is a static binary and systemd
+# on an LXC (see docs/deployment.md). This manifest is not that path: there is
+# no Helm chart, Kustomize overlay or Ingress, and it is not how the homelab
+# runs Platen. The NetworkPolicy below is an unvalidated sketch.
 #
 #   kubectl create namespace platen
 #   kubectl -n platen create secret generic platen \
 #     --from-literal=auth-tokens="$(openssl rand -hex 24)" \
+#     --from-literal=state-secret="$(openssl rand -hex 24)" \
 #     --from-literal=paperless-token="<token>"
 #   kubectl -n platen apply -f kubernetes.yaml
+#
+# After v0.1.2 is published, pin the image by digest instead of the moving tag:
+#   ghcr.io/giovannirco/platen@sha256:<digest from the release>
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -45,7 +50,7 @@ metadata:
   name: platen
   namespace: platen
 spec:
-  replicas: 1
+  replicas: 1 # scans and history are a local directory; do not scale this
   strategy:
     type: Recreate # the data volume is ReadWriteOnce
   selector:
@@ -61,15 +66,20 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: platen
-          image: ghcr.io/giovannirco/platen:0.1.1
+          image: ghcr.io/giovannirco/platen:0.1.2
           args: ["serve", "-config", "/etc/platen/platen.yaml"]
           ports:
             - {name: http, containerPort: 8080}
           env:
             - name: PLATEN_AUTH_TOKENS
               valueFrom: {secretKeyRef: {name: platen, key: auth-tokens}}
+            - name: PLATEN_STATE_SECRET
+              valueFrom: {secretKeyRef: {name: platen, key: state-secret}}
             - name: PLATEN_PAPERLESS_TOKEN
               valueFrom: {secretKeyRef: {name: platen, key: paperless-token}}
+          # Readiness is process health, not device health. A sleeping inkjet
+          # fails /readyz and would remove the pod from the Service. Alert on
+          # /readyz or platen_device_up instead of using them as this probe.
           readinessProbe:
             httpGet: {path: /healthz, port: http}
           livenessProbe:
@@ -103,3 +113,42 @@ spec:
   selector: {app: platen}
   ports:
     - {name: http, port: 80, targetPort: http}
+---
+# Replace the printer CIDR and the Paperless namespace before use.
+# DNS labels vary by cluster. Ingress to 8080 is open inside the cluster so
+# probes and the Service work; tighten it when you know the client pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platen
+  namespace: platen
+spec:
+  podSelector:
+    matchLabels: {app: platen}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+  egress:
+    - to:
+        - ipBlock: {cidr: 192.0.2.0/24} # printers and scanners VLAN — replace
+      ports:
+        - {protocol: TCP, port: 80}
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 631}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: paperless
+      ports:
+        - {protocol: TCP, port: 8000}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}

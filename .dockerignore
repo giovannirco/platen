@@ -5,3 +5,6 @@ dist
 docs
 platen.yaml
 *.local.yaml
+# A local deploy/.env holds tokens. Keep it out of COPY . . in the image build.
+.env
+**/.env

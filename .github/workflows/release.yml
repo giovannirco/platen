@@ -1,22 +1,49 @@
 name: Release
 
+# Binaries, checksums and a source SBOM are attached to the GitHub release.
+# The container image is signed with keyless cosign and carries buildx
+# provenance (mode=max) and an SBOM. This repository does not use GoReleaser;
+# those flags live on docker/build-push-action so the existing artifact names
+# stay the same.
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-  packages: write
-
 jobs:
-  binaries:
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - run: go test -count=1 ./...
+      - name: Format
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  binaries:
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
       - name: Build
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -32,32 +59,57 @@ jobs:
               tar -C dist -czf "dist/platen_${version}_${os}_${arch}.tar.gz" "platen${ext}" && rm "dist/platen${ext}"
             fi
           done
-          (cd dist && sha256sum * > checksums.txt)
+      - name: SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/platen.spdx.json
+          upload-artifact: false
+      - name: Checksums
+        run: (cd dist && sha256sum * > checksums.txt)
+      - name: Provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/*
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          # --verify-tag is in gh since 2.40; ubuntu-latest runners include it.
+          # A tag that contains "-" is a prerelease and must not become GitHub Latest.
+          args=(--verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
+          case "$GITHUB_REF_NAME" in
+            *-*) args+=(--prerelease --latest=false) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* "${args[@]}"
 
   image:
     runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-      - uses: docker/build-push-action@v7
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -65,3 +117,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
+          provenance: mode=max
+          sbom: true
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Sign the image (keyless)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${DIGEST}"

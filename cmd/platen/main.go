@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -21,16 +22,32 @@ import (
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
+// go install records the module version in build info when ldflags do not.
 var version = "dev"
+
+func init() {
+	if version != "" && version != "dev" {
+		return
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	v := strings.TrimPrefix(info.Main.Version, "v")
+	if v != "" && v != "(devel)" {
+		version = v
+	}
+}
 
 const usage = `Platen: your printer and scanner for people, programs and AI agents.
 
 Usage:
-  platen serve   [flags]          run the web interface, the REST API and the MCP endpoint
-  platen mcp     [flags]          run the MCP server on standard input/output (for local AI clients)
-  platen check   [flags]          talk to every configured device and report what it can do
-  platen print   [flags] <file>   print a file ("-" reads standard input)
-  platen scan    [flags]          scan a document to a file
+  platen serve        [flags]   run the web interface, the REST API and the MCP endpoint
+  platen mcp          [flags]   run the MCP server on standard input/output (for local AI clients)
+  platen check        [flags]   talk to every configured device and report what it can do
+  platen healthcheck  [flags]   exit 0 when the local server answers (for containers without a shell)
+  platen print        [flags] <file>   print a file ("-" reads standard input)
+  platen scan         [flags]   scan a document to a file
   platen version
 
 Common flags:
@@ -55,6 +72,8 @@ func main() {
 		err = cmdMCP(ctx, args)
 	case "check":
 		err = cmdCheck(ctx, args)
+	case "healthcheck":
+		err = cmdHealthcheck(args)
 	case "print":
 		err = cmdPrint(ctx, args)
 	case "scan":

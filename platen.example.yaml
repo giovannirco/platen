@@ -2,12 +2,19 @@
 # Run "platen check" to see whether Platen can talk to everything listed here.
 
 server:
-  # Address to listen on.
-  listen: ":8080"
+  # Address to listen on. Loopback needs no token. ":8080" and 0.0.0.0 are
+  # every interface: serve refuses to start that way until auth.tokens or
+  # auth.trusted_networks is set (or you set auth.open, which is insecure).
+  listen: "127.0.0.1:8080"
   # How people and agents reach Platen. Used for links, and accepted as a host name.
   base_url: "http://platen.lan:8080"
   # Scans and the print history are kept here.
   data_dir: "./data"
+  # Signs print confirmations and the web session cookie. Prefer the
+  # PLATEN_STATE_SECRET environment variable (openssl rand -hex 24) over
+  # writing the value here. If it is unset, every process generates a new
+  # secret: a restart signs the web UI out and drops in-flight confirmations.
+  # state_secret: ""
   # Extra host names Platen may be reached under. Requests that get in without a
   # token (open mode, or a client in a trusted network) are only served under a
   # name Platen knows: an IP address, localhost, a .local name, the host of
@@ -19,13 +26,16 @@ server:
 
 auth:
   # Bearer tokens for the API, the web interface and the MCP endpoint.
-  # Generate one with: openssl rand -hex 24
+  # One token can do all of those. Generate one with: openssl rand -hex 24
+  # Prefer PLATEN_AUTH_TOKENS over writing it here.
   tokens: []
   # Networks whose clients need no token, for example the home network: phones
   # and laptops there just open the web interface, while agents and scripts on
-  # other networks present a token. With neither tokens nor trusted networks,
-  # anyone who can reach Platen can print and scan.
+  # other networks present a token.
   # trusted_networks: ["192.168.1.0/24"]
+  # Explicit opt-in to serve with neither tokens nor trusted networks on a
+  # non-loopback address. Same gate as --insecure-open and PLATEN_ALLOW_OPEN=1.
+  # open: true
 
 printers:
   # A printer that speaks IPP (anything with AirPrint, Mopria or IPP Everywhere)...

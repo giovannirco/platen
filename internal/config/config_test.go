@@ -110,7 +110,88 @@ auth:
 	if cfg.Auth.Open() {
 		t.Error("a configuration with trusted networks is not open to everyone")
 	}
-	if !Default().Auth.Open() {
-		t.Error("without tokens and trusted networks Platen is open")
+	if !Default().Auth.Open() || Default().Auth.AllowOpen {
+		t.Error("without tokens and trusted networks Platen is open, and that is not an explicit opt-in")
+	}
+}
+
+func TestListenIsLoopback(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8080", "127.0.0.2:1", "localhost:8080", "[::1]:8080", "::1"} {
+		if !ListenIsLoopback(addr) {
+			t.Errorf("%s should be loopback", addr)
+		}
+	}
+	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080", "192.0.2.10:8080", "printer.lan:8080"} {
+		if ListenIsLoopback(addr) {
+			t.Errorf("%s should not be loopback", addr)
+		}
+	}
+}
+
+func TestCheckOpenListen(t *testing.T) {
+	open := func(listen string) *Config {
+		cfg := Default()
+		cfg.Server.Listen = listen
+		return cfg
+	}
+	if err := open(":8080").CheckOpenListen(false); err == nil || !strings.Contains(err.Error(), "refusing to listen") {
+		t.Fatalf("non-loopback open auth: %v", err)
+	}
+	if err := open("0.0.0.0:8080").CheckOpenListen(false); err == nil {
+		t.Fatal("0.0.0.0 without opt-in should be refused")
+	}
+	if err := open("127.0.0.1:8080").CheckOpenListen(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := open("[::1]:8080").CheckOpenListen(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := open("localhost:8090").CheckOpenListen(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := open(":8080").CheckOpenListen(true); err != nil {
+		t.Fatalf("--insecure-open: %v", err)
+	}
+	cfg := open("0.0.0.0:8080")
+	cfg.Auth.AllowOpen = true
+	if err := cfg.CheckOpenListen(false); err != nil {
+		t.Fatalf("auth.open: %v", err)
+	}
+	cfg = open(":8080")
+	cfg.Auth.Tokens = []string{"0123456789abcdef"}
+	if err := cfg.CheckOpenListen(false); err != nil {
+		t.Fatalf("token set: %v", err)
+	}
+	cfg = open(":8080")
+	cfg.Auth.TrustedNetworks = []string{"192.0.2.0/24"}
+	if err := cfg.CheckOpenListen(false); err != nil {
+		t.Fatalf("trusted network: %v", err)
+	}
+}
+
+func TestAllowOpenEnvIsTheSameGate(t *testing.T) {
+	t.Setenv("PLATEN_LISTEN", "0.0.0.0:8080")
+	t.Setenv("PLATEN_ALLOW_OPEN", "1")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Auth.AllowOpen || !cfg.Auth.Open() {
+		t.Fatalf("PLATEN_ALLOW_OPEN=1 should set the explicit opt-in: %+v", cfg.Auth)
+	}
+	if err := cfg.CheckOpenListen(false); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PLATEN_ALLOW_OPEN", "false")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.AllowOpen {
+		t.Fatal("PLATEN_ALLOW_OPEN=false must not enable open mode")
+	}
+	if err := cfg.CheckOpenListen(false); err == nil {
+		t.Fatal("a negative PLATEN_ALLOW_OPEN must not bypass the refuse")
 	}
 }

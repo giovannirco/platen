@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.1.2] — unreleased
+
+Planned tag: `v0.1.2`. This entry is the release note for that tag. The tag is not created by the pull request that adds it.
+
+### Security
+
+- `platen serve` refuses to listen on a non-loopback address when no token and no trusted network are set. Loopback still runs for local development. The only opt-in is `auth.open: true`, `--insecure-open`, or `PLATEN_ALLOW_OPEN=1` (the same gate, logged as insecure).
+- Compose publishes `127.0.0.1:8080:8080` and will not start without `PLATEN_AUTH_TOKENS` and `PLATEN_STATE_SECRET`.
+- The web session cookie stores an HMAC of the bearer token, not the token. `X-Forwarded-Proto` is honoured only from `server.trusted_proxies`.
+- HTTP read and idle timeouts are set. The read timeout covers a 100MB upload. The event stream is left without a write deadline.
+- `SECURITY.md`, Dependabot for Go modules, GitHub Actions and Docker, `govulncheck` in CI, Actions pinned to commit SHAs, and a digest-pinned Dockerfile.
+- The module requires Go 1.27.3 so builds pick up the standard-library fixes in that patch. `govulncheck` fails the job when it finds a reachable vulnerability.
+- Release images get buildx provenance (`mode=max`), an SBOM and a keyless cosign signature. Binary releases keep `checksums.txt` and gain an SPDX SBOM plus a build-provenance attestation. `:latest` is not moved by a prerelease tag.
+
+### Added
+
+- `GET /readyz` reports whether configured printers, scanners and Paperless answered. `GET /metrics` exposes `platen_up`, `platen_info` and `platen_device_up` in Prometheus text. Both are unauthenticated, like `/healthz`.
+- `platen healthcheck` probes the local process. Distroless images can use it as a health check.
+- `platen version` after `go install` uses the module version from build info when the binary was not stamped with `-ldflags`.
+- Deployment notes for the homelab binary-on-LXC path, including the Main VLAN reachability gap and the `nas-nvme` boot dependency.
+
+### Changed
+
+- MCP tool annotations set read-only, destructive, idempotent and open-world hints.
+- Devices created from `PLATEN_PRINTER_URI` or `PLATEN_SCANNER_URL` log that insecure TLS is on.
+- Docs state the supported device matrix honestly: Canon PIXMA G6010 / G6000 series for print, flatbed scan and ink; duplex and the document feeder are not verified on paper; URF is not implemented; Office documents are not converted.
+
+### Upgrade notes
+
+- An existing service that listens on every interface with an empty token list and no trusted network will not start until you set a token, a trusted network, a loopback bind, or an explicit insecure opt-in.
+- Web sessions from 0.1.1 are cookies that contain the raw token. They stop working. Sign in again.
+- Set `PLATEN_STATE_SECRET` (or `server.state_secret`) so a print confirmation and the web session survive a restart. Without it, a new random secret is used each process, and every restart signs the web UI out.
+- No scan or history migration is required. Run one replica; the data directory is local.
+- Container examples in this tree refer to `0.1.2`. That image exists only after the tag is pushed. Until then, the newest published release is `0.1.1`.
+
 ## [0.1.1](https://github.com/giovannirco/platen/releases/tag/v0.1.1) — 2026-10-03
 
 ### Added
