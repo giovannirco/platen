@@ -1,8 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# golang:1.27.3 multi-arch index, resolved 2026-11-03 (same digest as the 1.27 tag).
-# The module requires 1.27.3 so the standard-library fixes in that patch are in CI and release builds.
-FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

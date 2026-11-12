@@ -1,8 +1,16 @@
 # Changelog
 
-## [0.1.2] — unreleased
+## [Unreleased]
 
-Planned tag: `v0.1.2`. This entry is the release note for that tag. The tag is not created by the pull request that adds it.
+### Security
+
+- Build with Go 1.27.4, including the HTTP/1 server crash fix for GO-2026-6859.
+
+### Changed
+
+- Update go-pdfium to 1.21.4 (PDFium 8111), x/image to 0.48.0 and x/text to 0.44.0, with their required x/sync and x/sys updates.
+
+## [0.1.2](https://github.com/giovannirco/platen/releases/tag/v0.1.2) — 2026-11-04
 
 ### Security
 
@@ -33,7 +41,7 @@ Planned tag: `v0.1.2`. This entry is the release note for that tag. The tag is n
 - Web sessions from 0.1.1 are cookies that contain the raw token. They stop working. Sign in again.
 - Set `PLATEN_STATE_SECRET` (or `server.state_secret`) so a print confirmation and the web session survive a restart. Without it, a new random secret is used each process, and every restart signs the web UI out.
 - No scan or history migration is required. Run one replica; the data directory is local.
-- Container examples in this tree refer to `0.1.2`. That image exists only after the tag is pushed. Until then, the newest published release is `0.1.1`.
+- Container examples in this tree refer to the published `0.1.2` image.
 
 ## [0.1.1](https://github.com/giovannirco/platen/releases/tag/v0.1.1) — 2026-10-03
 
