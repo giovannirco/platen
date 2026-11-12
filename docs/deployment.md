@@ -4,7 +4,7 @@ The supported production path is a **static binary and systemd on an LXC**. That
 
 Releases include static binaries for Linux and macOS on amd64/arm64, Windows on amd64, and `checksums.txt`. Container images are `ghcr.io/giovannirco/platen:<version>` for Linux amd64/arm64. Pin that version. `:latest` moves when a stable release tag is pushed (a tag containing `-`, such as a prerelease, does not move it). Do not run production on `:latest`.
 
-The image and binary for **0.1.2 exist only after the `v0.1.2` tag is pushed**. Until that tag exists, the newest published release is [v0.1.1](https://github.com/giovannirco/platen/releases/tag/v0.1.1). This document describes the 0.1.2 upgrade so the tag can be cut without a second doc change.
+The current published release is [v0.1.3](https://github.com/giovannirco/platen/releases/tag/v0.1.3), built with Go 1.27.4 and updated dependencies. It retains the authentication and monitoring behavior introduced in 0.1.2. Verify checksums and release provenance before installing.
 
 Keep configuration, the secret environment file and the data directory outside the release archive. The data directory holds scans and print history. Run **one** process against it. Preserve it across upgrades.
 
@@ -18,7 +18,7 @@ Facts that are safe to write down here:
 - The binary is pinned to a release. The run notes record the checksum. Check it again on each upgrade (`sha256sum --check`).
 - Configuration is maintained in the site's `tools/platen` files and installed on the container. Those files are not in this repository. Do not copy tokens into git.
 - The token is taken from the password manager and installed as `/etc/platen/platen.env` mode `640`. The unit reads it with `EnvironmentFile=`.
-- The process listens on port **8090** on this container. The binary running there today is **0.1.1**. On that version the meaningful HTTP probes are `/healthz` and `/api/v1/info` only. `/readyz` and `/metrics` arrive in **0.1.2**. Until the upgrade, those two paths are not probes: the 0.1.1 web interface answers them with **HTTP 200 and the SPA HTML**, so a blackbox check that treats any 200 as "up" is a false positive.
+- The process listens on port **8090**. Version **0.1.3** was installed and verified on 2026-11-12: health, readiness, UI, metrics and MCP checks passed, with configuration and stored documents preserved. No print or scan was initiated during that upgrade. Older 0.1.1 installations return SPA HTML at `/readyz` and `/metrics`; check the version and response format before treating those URLs as probes.
 
 A unit that matches that shape:
 
@@ -42,13 +42,13 @@ Checked around 3 November 2026:
 - mDNS on Main still advertises "Canon G6010 @ printhub", so phones discover a printer path that does not connect.
 - Family use without a token depends on the Main network being listed in `auth.trusted_networks`. That does nothing while Main cannot open the port.
 
-This is an operations gap, not a release blocker. It needs a look at CT 146's interface, firewall and route, on the container and on the Proxmox host. Shipping v0.1.2 does not repair it. Until the path is fixed, phones on Main that follow the mDNS advertisement will fail, and a trusted-network rule for Main will not see those clients.
+This was an operations gap, not a release blocker. The November 12 service checks do not establish that the Main path was repaired. Recheck CT 146's interface, firewall and route from that network before claiming family access is restored; a binary upgrade alone does not repair routing.
 
 ### Monitoring and boot
 
-While CT 146 is still on **0.1.1**, probe `/healthz` (process up) and `/api/v1/info` (version and configuration). Do not point a blackbox check at `/readyz` or `/metrics` yet. On 0.1.1 those URLs fall through to the web interface and return **HTTP 200 with SPA HTML**, which looks healthy and is not.
+Probe `/healthz` for process liveness and `/api/v1/info` for the installed version. On **0.1.2 and later**, `/readyz` and `/metrics` expose device checks. On older 0.1.1 installs those paths return SPA HTML with HTTP 200, not monitoring results.
 
-`/healthz` only means the process is running. It does not mean the printer answered. **After the upgrade to 0.1.2**, use `/readyz` or `/metrics` (`platen_up`, `platen_device_up`) for device checks. A timer that runs `platen check -json` is valid on both versions. Alert when that command fails or when the container is down.
+`/healthz` only means the process is running. It does not mean the printer answered. Use `/readyz` or `/metrics` (`platen_up`, `platen_device_up`) for device checks. A timer that runs `platen check -json` is valid on both versions. Alert when that command fails or when the container is down.
 
 Two separate outages, not one duration:
 
@@ -63,31 +63,31 @@ Operators who already have the private site10 notes can match this section to ho
 
 Two-sided printing is implemented. It has **not** been checked on paper on the Canon PIXMA G6010 (homelab follow-up 158). Do not treat a successful raster job as proof of duplex. The document feeder path is also untested on that hardware.
 
-## Binary upgrade (0.1.1 → 0.1.2)
+## Binary upgrade (0.1.1 or 0.1.2 → 0.1.3)
 
 The example below upgrades a Linux amd64 install that uses `platen.service`, `/usr/local/bin/platen`, `/etc/platen` and `/var/lib/platen`. Adjust architecture, paths and the service name. On CT 146 the listen port is 8090 and the environment file is `/etc/platen/platen.env`. Stop the service only when no print or scan is in progress.
 
-0.1.2 will not start if it binds a non-loopback address and both the token list and the trusted networks are empty. Set `PLATEN_AUTH_TOKENS` or `auth.trusted_networks` before restarting a service that previously ran open. Set `PLATEN_STATE_SECRET` so an in-flight print confirmation can survive the new process. Web browsers must sign in again: old session cookies held the raw token and are rejected.
+Since 0.1.2, Platen will not start if it binds a non-loopback address and both the token list and the trusted networks are empty. Set `PLATEN_AUTH_TOKENS` or `auth.trusted_networks` before restarting a service that previously ran open. Preserve `PLATEN_STATE_SECRET` across restarts. When upgrading from 0.1.1, web browsers must sign in again: its old session cookies held the raw token and are rejected.
 
-Download and verify in a new directory, after the `v0.1.2` release exists:
+Download and verify in a new directory:
 
 ```sh
-mkdir platen-0.1.2
-cd platen-0.1.2
-curl --fail --location --remote-name https://github.com/giovannirco/platen/releases/download/v0.1.2/platen_0.1.2_linux_amd64.tar.gz
-curl --fail --location --remote-name https://github.com/giovannirco/platen/releases/download/v0.1.2/checksums.txt
+mkdir platen-0.1.3
+cd platen-0.1.3
+curl --fail --location --remote-name https://github.com/giovannirco/platen/releases/download/v0.1.3/platen_0.1.3_linux_amd64.tar.gz
+curl --fail --location --remote-name https://github.com/giovannirco/platen/releases/download/v0.1.3/checksums.txt
 sha256sum --check --ignore-missing checksums.txt
-tar -xzf platen_0.1.2_linux_amd64.tar.gz
+tar -xzf platen_0.1.3_linux_amd64.tar.gz
 ./platen version
 ```
 
-Only continue if the checksum matches and the binary prints `platen 0.1.2`. Stop the service, keep a private backup, and replace the binary:
+Only continue if the checksum matches and the binary prints `platen 0.1.3`. Stop the service, keep a private backup, and replace the binary:
 
 ```sh
 sudo systemctl stop platen.service
 sudo install -d -m 700 /var/backups/platen
-sudo tar -czf /var/backups/platen/before-0.1.2.tar.gz -C / etc/platen var/lib/platen
-sudo chmod 600 /var/backups/platen/before-0.1.2.tar.gz
+sudo tar -czf /var/backups/platen/before-0.1.3.tar.gz -C / etc/platen var/lib/platen
+sudo chmod 600 /var/backups/platen/before-0.1.3.tar.gz
 sudo cp -p /usr/local/bin/platen /usr/local/bin/platen.previous
 sudo install -m 755 platen /usr/local/bin/platen.next
 sudo mv /usr/local/bin/platen.next /usr/local/bin/platen
@@ -109,14 +109,14 @@ No data migration is required from 0.1.1. Set `PLATEN_STATE_SECRET` (or `server.
 
 ## Containers
 
-Compose and Kubernetes are examples. For Compose, pin `image: ghcr.io/giovannirco/platen:0.1.2` after that tag exists, keep the data volume, and copy [`deploy/.env.example`](../deploy/.env.example) to `deploy/.env`. The published port defaults to `127.0.0.1:8080`. To serve the LAN, replace that with one explicit host address. Do not switch the default to every interface.
+Compose and Kubernetes are examples. For Compose, pin `image: ghcr.io/giovannirco/platen:0.1.3`, keep the data volume, and copy [`deploy/.env.example`](../deploy/.env.example) to `deploy/.env`. The published port defaults to `127.0.0.1:8080`. To serve the LAN, replace that with one explicit host address. Do not switch the default to every interface.
 
 ```sh
 docker compose pull platen
 docker compose up -d platen
 ```
 
-The container listens on every interface in its own network namespace, which is not loopback, so it refuses to start without a token. The health check runs `platen healthcheck` because the image has no shell. The image creates `/data` owned by uid 65532 so a new named volume is writable under Compose `read_only: true`. Before cutting the `v0.1.2` tag, smoke `docker compose up` from `deploy/` with `.env` filled in from [`.env.example`](../deploy/.env.example), and confirm the process can write its data directory. An older volume created as root still needs a one-time `chown` to 65532, or a new volume.
+The container listens on every interface in its own network namespace, which is not loopback, so it refuses to start without a token. The health check runs `platen healthcheck` because the image has no shell. The image creates `/data` owned by uid 65532 so a new named volume is writable under Compose `read_only: true`. Before using a new image, smoke `docker compose up` from `deploy/` with `.env` filled in from [`.env.example`](../deploy/.env.example), and confirm the process can write its data directory. An older volume created as root still needs a one-time `chown` to 65532, or a new volume.
 
 The Kubernetes example uses one replica, a PVC, and `/healthz` for both liveness and readiness. `/readyz` and `platen_device_up` are for alerts: a sleeping printer must not remove the pod from the Service. Preserve the PVC and the Secret, including `state-secret`. Pin the image digest from the release once it is published. The NetworkPolicy uses the documentation range `192.0.2.0/24` as a placeholder for the printer VLAN; replace it before applying.
 
@@ -133,6 +133,6 @@ cosign verify \
 
 | Tag | Meaning |
 |---|---|
-| `0.1.2` | Immutable release tag. Use this in production once it exists. |
+| `0.1.3` | Current immutable release tag. Pin its digest for containers. |
 | `0.1` | Moving minor tag. Avoid for the homelab pin. |
 | `latest` | Newest stable release. Not updated by prerelease tags. Not for CT 146. |

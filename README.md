@@ -69,7 +69,7 @@ A CUPS queue works as a printer too: `ipp://<cups-host>:631/printers/<queue>`.
 
 ### 2. Run it
 
-With Go 1.27.3 or newer:
+With Go 1.27.4 or newer:
 
 ```sh
 go install github.com/giovannirco/platen/cmd/platen@latest
@@ -97,10 +97,10 @@ docker run --rm -p 127.0.0.1:8080:8080 -v platen-data:/data \
   -e PLATEN_PRINTER_URI=ipp://192.0.2.20/ipp/print \
   -e PLATEN_SCANNER_URL=http://192.0.2.20/eSCL \
   -e PLATEN_BASE_URL=http://127.0.0.1:8080 \
-  ghcr.io/giovannirco/platen:0.1.2
+  ghcr.io/giovannirco/platen:0.1.3
 ```
 
-To reach that container from another machine, publish one explicit host address (`-p 192.0.2.10:8080:8080`) and keep `PLATEN_AUTH_TOKENS` set. The `0.1.2` image exists after the `v0.1.2` tag is pushed; until then use `0.1.1`.
+To reach that container from another machine, publish one explicit host address (`-p 192.0.2.10:8080:8080`) and keep `PLATEN_AUTH_TOKENS` set. The current release is [v0.1.3](https://github.com/giovannirco/platen/releases/tag/v0.1.3); verify the release checksums before installing a binary.
 
 The supported production install is a binary and systemd. Compose and Kubernetes examples are in [`deploy/`](deploy/) and are not that path. See [docs/deployment.md](docs/deployment.md).
 
