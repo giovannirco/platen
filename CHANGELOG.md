@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.3](https://github.com/giovannirco/platen/releases/tag/v0.1.3) — 2026-11-12
 
 ### Security
 
