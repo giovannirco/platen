@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/OpenPrinting/goipp v1.2.0
 	github.com/google/jsonschema-go v0.4.3
-	github.com/klippa-app/go-pdfium v1.21.4
+	github.com/klippa-app/go-pdfium v1.21.5
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/image v0.48.0
 	golang.org/x/text v0.44.0
